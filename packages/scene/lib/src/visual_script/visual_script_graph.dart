@@ -349,6 +349,30 @@ class VisualScriptParameter {
   );
 }
 
+/// A named event a blueprint can raise and listen for, with the values it
+/// carries.
+///
+/// The declaration is what makes the two ends agree: an On Event node grows
+/// an output per parameter, and every Call Event node grows an input per
+/// parameter, so adding one changes both at once.
+/// {@category Visual scripting}
+class VisualScriptEventSpec {
+  VisualScriptEventSpec({
+    required this.name,
+    List<VisualScriptParameter>? parameters,
+  }) : parameters = parameters ?? [];
+
+  /// What a Call and an On node name it by.
+  final String name;
+
+  /// The values it carries.
+  final List<VisualScriptParameter> parameters;
+}
+
+/// Finds what a named event carries, for the nodes at either end of one.
+/// {@category Visual scripting}
+typedef VisualScriptEventLookup = VisualScriptEventSpec? Function(String name);
+
 /// What a node's shape may depend on, beyond the node itself.
 ///
 /// An entry node's pins are its own graph's parameters; a call node's are
@@ -356,13 +380,16 @@ class VisualScriptParameter {
 /// the two need different things, so both are carried.
 /// {@category Visual scripting}
 class VisualScriptShapeContext {
-  const VisualScriptShapeContext({this.graph, this.graphs});
+  const VisualScriptShapeContext({this.graph, this.graphs, this.events});
 
   /// The graph the node sits in.
   final VisualScriptGraph? graph;
 
   /// How to find a graph the node names.
   final VisualScriptGraphLookup? graphs;
+
+  /// How to find an event the node names.
+  final VisualScriptEventLookup? events;
 
   /// Nothing known, which is what a palette asking "what would a fresh one
   /// look like" has.

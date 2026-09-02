@@ -157,10 +157,83 @@ final VisualScriptNodeType callFunction = VisualScriptNodeType(
   },
 );
 
+// ---------------------------------------------------------------------------
+// Custom events.
+// ---------------------------------------------------------------------------
+
+/// The literal an event node keeps the event's name in.
+const String namedEventKey = 'event';
+
+/// The event [node] names, or null when it names nothing declared.
+/// {@category Visual scripting}
+VisualScriptEventSpec? namedEventOf(
+  VisualScriptNodeSpec node,
+  VisualScriptShapeContext context,
+) {
+  final name = node.literals[namedEventKey];
+  if (name is! String || name.isEmpty) return null;
+  return context.events?.call(name);
+}
+
+final VisualScriptNodeType onCustomEvent = VisualScriptNodeType(
+  id: 'event.custom',
+  label: 'On Event',
+  category: 'Events',
+  doc:
+      'Runs when something calls the event it names, and hands on whatever '
+      'that call carried.',
+  isEvent: true,
+  pins: const [_execOut],
+  pinsFor: (node, context) => [
+    _execOut,
+    for (final parameter
+        in namedEventOf(node, context)?.parameters ??
+            const <VisualScriptParameter>[])
+      parameter.asPin(isInput: false),
+  ],
+  evaluate: (context, node, inputs) =>
+      (outputs: context.arguments, next: const <String>['then']),
+);
+
+final VisualScriptNodeType callCustomEvent = VisualScriptNodeType(
+  id: 'flow.callEvent',
+  label: 'Call Event',
+  category: 'Events',
+  doc:
+      'Raises a named event. Every On Event node listening for that name runs '
+      'before this one continues.',
+  pins: const [_execIn, _execOut],
+  pinsFor: (node, context) => [
+    _execIn,
+    for (final parameter
+        in namedEventOf(node, context)?.parameters ??
+            const <VisualScriptParameter>[])
+      parameter.asPin(isInput: true),
+    _execOut,
+  ],
+  evaluate: (context, node, inputs) {
+    final flow = context.flow;
+    final name = node.literals[namedEventKey];
+    if (flow == null || name is! String || name.isEmpty) {
+      return (outputs: const <String, Object?>{}, next: const <String>['then']);
+    }
+    // Synchronously, before continuing: a call that queued would put the
+    // listener's effects after everything downstream of the caller, which is
+    // not what "call" means anywhere else.
+    flow.raiseEvent(context, node, name, arguments: inputs);
+    if (context.error != null || context.signal != null) {
+      return (outputs: const <String, Object?>{}, next: const <String>[]);
+    }
+    return (outputs: const <String, Object?>{}, next: const <String>['then']);
+  },
+);
+
 /// The function nodes, for registering in one go.
 /// {@category Visual scripting}
 final List<VisualScriptNodeType> functionVisualScriptNodes = [
   functionEntry,
   functionResult,
   callFunction,
+  onCustomEvent,
+  callCustomEvent,
 ];

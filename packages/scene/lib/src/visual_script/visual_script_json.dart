@@ -313,6 +313,17 @@ Map<String, Object?> encodeBlueprint(Blueprint blueprint) => {
             'initial': _encodeValue(variable.initial),
         },
     ],
+  if (blueprint.events.isNotEmpty)
+    'events': [
+      for (final event in blueprint.events)
+        {
+          'name': event.name,
+          if (event.parameters.isNotEmpty)
+            'parameters': [
+              for (final entry in event.parameters) _encodeParameter(entry),
+            ],
+        },
+    ],
   'graphs': [for (final graph in blueprint.graphs) encodeVisualScript(graph)],
 };
 
@@ -352,6 +363,17 @@ Blueprint decodeBlueprint(Map<String, Object?> json) {
         initial: _decodeValue(map['initial']),
       ),
     );
+  }
+  for (final raw in (json['events'] as List? ?? const [])) {
+    if (raw is! Map) continue;
+    if (raw['name'] case final String name) {
+      blueprint.events.add(
+        VisualScriptEventSpec(
+          name: name,
+          parameters: _decodeParameters(raw['parameters']),
+        ),
+      );
+    }
   }
   return blueprint;
 }

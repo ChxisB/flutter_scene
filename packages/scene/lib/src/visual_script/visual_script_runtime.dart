@@ -224,6 +224,17 @@ abstract class VisualScriptFlow {
     Map<String, Object?> arguments = const {},
   });
 
+  /// Runs every On Event node listening for [name], with [arguments].
+  ///
+  /// Synchronous, and in a frame of its own so the listener's arguments do
+  /// not overwrite whatever the caller was itself called with.
+  void raiseEvent(
+    VisualScriptContext context,
+    VisualScriptNodeSpec caller,
+    String name, {
+    Map<String, Object?> arguments = const {},
+  });
+
   /// Runs [graph] in the *caller's* frame, which is what a macro is.
   ///
   /// A macro is pasted in rather than called, so it shares the caller's
@@ -302,6 +313,7 @@ class VisualScriptContext {
     required this.host,
     this.trace,
     this.graphs,
+    this.events,
     Map<String, Object?>? variables,
   }) : variables = variables ?? {} {
     _frames.add(
@@ -332,9 +344,12 @@ class VisualScriptContext {
   /// How to find a graph a node names, or null when nothing nests.
   final VisualScriptGraphLookup? graphs;
 
+  /// How to find an event a node names, or null when none are declared.
+  final VisualScriptEventLookup? events;
+
   /// What the running frame's nodes take their shape from.
   VisualScriptShapeContext get shape =>
-      VisualScriptShapeContext(graph: graph, graphs: graphs);
+      VisualScriptShapeContext(graph: graph, graphs: graphs, events: events);
 
   /// Where to record what the run did, or null to record nothing.
   ///
@@ -785,6 +800,44 @@ class VisualScriptInterpreter implements VisualScriptFlow {
       context.popFrame();
     }
   }
+
+  @override
+  void raiseEvent(
+    VisualScriptContext context,
+    VisualScriptNodeSpec caller,
+    String name, {
+    Map<String, Object?> arguments = const {},
+  }) {
+    // Collected first: running a listener may add nodes to nothing, but it
+    // may raise the same event again, and iterating the live list while that
+    // happens is how a graph edit mid-run corrupts the walk.
+    final listeners = [
+      for (final node in context.graph.nodes)
+        if (node.type == customEventType &&
+            node.literals[namedEventKeyName] == name)
+          node,
+    ];
+    for (final listener in listeners) {
+      final frame = context.pushFrame(context.graph, caller.id);
+      if (frame == null) return;
+      frame.arguments
+        ..clear()
+        ..addAll(arguments);
+      try {
+        _run(context, listener);
+      } finally {
+        context.popFrame();
+      }
+      if (context.error != null || context.signal != null) return;
+    }
+  }
+
+  /// The node type an On Event node has, and the literal it keeps its name in.
+  ///
+  /// Named here rather than imported, because the functions library imports
+  /// this one and the dependency cannot go both ways.
+  static const String customEventType = 'event.custom';
+  static const String namedEventKeyName = 'event';
 
   /// Runs [graph] from its entry node, in whatever frame is current.
   VisualScriptFlowStatus _runEntry(

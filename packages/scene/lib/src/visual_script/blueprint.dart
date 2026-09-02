@@ -97,8 +97,10 @@ class Blueprint {
     this.parentClass = defaultBlueprintParent,
     List<VisualScriptVariable>? variables,
     List<VisualScriptGraph>? graphs,
+    List<VisualScriptEventSpec>? events,
   }) : variables = variables ?? [],
-       graphs = graphs ?? [];
+       graphs = graphs ?? [],
+       events = events ?? [];
 
   /// A blueprint holding one event graph, which is what a script that has not
   /// grown past one graph is.
@@ -137,6 +139,17 @@ class Blueprint {
 
   /// Its graphs, in the order an editor lists them.
   final List<VisualScriptGraph> graphs;
+
+  /// The events it declares: what a Call Event raises and an On Event hears.
+  final List<VisualScriptEventSpec> events;
+
+  /// The event called [name], or null.
+  VisualScriptEventSpec? event(String name) {
+    for (final entry in events) {
+      if (entry.name == name) return entry;
+    }
+    return null;
+  }
 
   /// Every graph of [kind].
   Iterable<VisualScriptGraph> graphsOfKind(VisualScriptGraphKind kind) =>
@@ -250,6 +263,13 @@ class Blueprint {
     name: name,
     kind: kind,
     parentClass: parentClass,
+    events: [
+      for (final entry in events)
+        VisualScriptEventSpec(
+          name: entry.name,
+          parameters: List.of(entry.parameters),
+        ),
+    ],
     variables: [
       for (final variable in variables)
         VisualScriptVariable(
@@ -316,6 +336,7 @@ class BlueprintRunner {
         trace: trace,
         variables: variables,
         graphs: blueprint.graph,
+        events: blueprint.event,
       );
 
   /// Runs every construction script, once for the life of this runner.

@@ -102,13 +102,19 @@ export 'src/visual_script/visual_script_functions.dart'
     show
         calledGraphKey,
         calledGraphOf,
+        callCustomEvent,
         callFunction,
         functionEntry,
         functionResult,
-        functionVisualScriptNodes;
+        functionVisualScriptNodes,
+        namedEventKey,
+        namedEventOf,
+        onCustomEvent;
 export 'src/visual_script/visual_script_graph.dart'
     show
         VisualScriptComment,
+        VisualScriptEventLookup,
+        VisualScriptEventSpec,
         VisualScriptGraph,
         VisualScriptGraphKind,
         VisualScriptGraphLookup,

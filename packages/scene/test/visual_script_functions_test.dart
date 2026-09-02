@@ -337,6 +337,156 @@ void main() {
     });
   });
 
+  group('a custom event', () {
+    Blueprint withEvent() => Blueprint(
+      events: [
+        VisualScriptEventSpec(
+          name: 'Damaged',
+          parameters: [
+            const VisualScriptParameter(
+              id: 'amount',
+              name: 'Amount',
+              type: VisualScriptType.number,
+            ),
+          ],
+        ),
+      ],
+    );
+
+    test('carries its arguments from the call to the listener', () {
+      final blueprint = withEvent();
+      final events = VisualScriptGraph();
+      final tick = events.add('event.tick');
+      final call = events.add('flow.callEvent')
+        ..literals[namedEventKey] = 'Damaged'
+        ..literals['amount'] = 30.0;
+      final listener = events.add('event.custom')
+        ..literals[namedEventKey] = 'Damaged';
+      final print = events.add('debug.print')..literals['label'] = 'hit';
+      events
+        ..wire(tick, 'then', call, 'exec')
+        ..wire(listener, 'then', print, 'exec')
+        ..wire(listener, 'amount', print, 'value');
+      blueprint.addGraph(events, kind: VisualScriptGraphKind.eventGraph);
+
+      expect(run(blueprint), ['hit: 30.0']);
+    });
+
+    test('runs before the caller continues', () {
+      final blueprint = withEvent();
+      final events = VisualScriptGraph();
+      final tick = events.add('event.tick');
+      final call = events.add('flow.callEvent')
+        ..literals[namedEventKey] = 'Damaged';
+      final after = events.add('debug.print')..literals['value'] = 'after';
+      final listener = events.add('event.custom')
+        ..literals[namedEventKey] = 'Damaged';
+      final during = events.add('debug.print')..literals['value'] = 'during';
+      events
+        ..wire(tick, 'then', call, 'exec')
+        ..wire(call, 'then', after, 'exec')
+        ..wire(listener, 'then', during, 'exec');
+      blueprint.addGraph(events, kind: VisualScriptGraphKind.eventGraph);
+
+      expect(run(blueprint), [
+        'during',
+        'after',
+      ], reason: 'a call that queued would not be a call');
+    });
+
+    test('reaches every listener of that name, and no others', () {
+      final blueprint = withEvent()
+        ..events.add(VisualScriptEventSpec(name: 'Healed'));
+      final events = VisualScriptGraph();
+      final tick = events.add('event.tick');
+      final call = events.add('flow.callEvent')
+        ..literals[namedEventKey] = 'Damaged';
+      for (final (name, message) in [
+        ('Damaged', 'one'),
+        ('Damaged', 'two'),
+        ('Healed', 'other'),
+      ]) {
+        final listener = events.add('event.custom')
+          ..literals[namedEventKey] = name;
+        final print = events.add('debug.print')..literals['value'] = message;
+        events.wire(listener, 'then', print, 'exec');
+      }
+      events.wire(tick, 'then', call, 'exec');
+      blueprint.addGraph(events, kind: VisualScriptGraphKind.eventGraph);
+
+      expect(run(blueprint), ['one', 'two']);
+    });
+
+    test('its pins are the parameters the blueprint declared', () {
+      final blueprint = withEvent();
+      final events = VisualScriptGraph();
+      final call = events.add('flow.callEvent')
+        ..literals[namedEventKey] = 'Damaged';
+      final listener = events.add('event.custom')
+        ..literals[namedEventKey] = 'Damaged';
+      final registry = standardVisualScriptRegistry();
+      final shape = VisualScriptShapeContext(
+        graph: events,
+        graphs: blueprint.graph,
+        events: blueprint.event,
+      );
+      expect(
+        registry['flow.callEvent']!.inputsOf(call, shape).map((p) => p.id),
+        ['exec', 'amount'],
+      );
+      expect(
+        registry['event.custom']!.outputsOf(listener, shape).map((p) => p.id),
+        ['then', 'amount'],
+      );
+    });
+
+    test('calling one nothing listens for is not an error', () {
+      final blueprint = withEvent();
+      final events = VisualScriptGraph();
+      final tick = events.add('event.tick');
+      final call = events.add('flow.callEvent')
+        ..literals[namedEventKey] = 'Damaged';
+      final after = events.add('debug.print')..literals['value'] = 'after';
+      events
+        ..wire(tick, 'then', call, 'exec')
+        ..wire(call, 'then', after, 'exec');
+      blueprint.addGraph(events, kind: VisualScriptGraphKind.eventGraph);
+
+      final host = NullVisualScriptHost();
+      final runner = BlueprintRunner(blueprint: blueprint, host: host)
+        ..fire(onTick.id);
+      expect(runner.error, isNull);
+      expect(host.messages, ['after']);
+    });
+
+    test('an event that calls itself is stopped by the depth limit', () {
+      final blueprint = withEvent();
+      final events = VisualScriptGraph();
+      final tick = events.add('event.tick');
+      final call = events.add('flow.callEvent')
+        ..literals[namedEventKey] = 'Damaged';
+      final listener = events.add('event.custom')
+        ..literals[namedEventKey] = 'Damaged';
+      final again = events.add('flow.callEvent')
+        ..literals[namedEventKey] = 'Damaged';
+      events
+        ..wire(tick, 'then', call, 'exec')
+        ..wire(listener, 'then', again, 'exec');
+      blueprint.addGraph(events, kind: VisualScriptGraphKind.eventGraph);
+
+      final runner = BlueprintRunner(
+        blueprint: blueprint,
+        host: NullVisualScriptHost(),
+      )..fire(onTick.id);
+      expect(runner.error, isNotNull);
+    });
+
+    test('its declaration survives being saved', () {
+      final after = readBlueprint(writeBlueprint(withEvent()));
+      expect(after.event('Damaged')!.parameters.single.name, 'Amount');
+    });
+  });
+
   group('the signature survives being saved', () {
     test('parameters and results round-trip through JSON', () {
       final blueprint = Blueprint()..graphs.add(doubler(isPure: true));
