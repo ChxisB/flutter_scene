@@ -118,6 +118,9 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
   /// The comment whose details are showing, or null.
   int? _selectedComment;
 
+  /// The declared event whose details are showing, by name, or null.
+  String? _selectedEvent;
+
   /// The wire being drawn, if any: where it started and where the pointer is.
   VisualScriptPortRef? _wireFrom;
   Offset? _wirePointer;
@@ -377,6 +380,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
       setState(() {
         _selected = null;
         _selectedVariable = null;
+        _selectedEvent = null;
         _selectedComment = header;
         _movingComment = header;
         // Captured on grab rather than recomputed as it moves: a node that
@@ -394,6 +398,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
       setState(() {
         _selected = node;
         _selectedVariable = null;
+        _selectedEvent = null;
         _selectedComment = null;
         _dragging = node;
         _dragOffset = at - Offset(spec.position.x, spec.position.y);
@@ -403,6 +408,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     setState(() {
       _selected = null;
       _selectedVariable = null;
+      _selectedEvent = null;
       _selectedComment = null;
     });
   }
@@ -627,6 +633,74 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
         unawaited(_commit());
       },
     );
+  }
+
+  Widget _buildEventDetails(Blueprint blueprint) {
+    final event = blueprint.event(_selectedEvent!);
+    if (event == null) return const SizedBox.shrink();
+    return VisualScriptEventDetails(
+      event: event,
+      onChanged: () => unawaited(_commit()),
+    );
+  }
+
+  /// Declares a new event, under a name nothing else here has.
+  Future<void> _addEvent(Blueprint blueprint) async {
+    final taken = {for (final event in blueprint.events) event.name};
+    var name = 'New Event';
+    for (var i = 2; taken.contains(name); i++) {
+      name = 'New Event $i';
+    }
+    final event = VisualScriptEventSpec(name: name);
+    setState(() {
+      blueprint.events.add(event);
+      _selected = null;
+      _selectedEvent = name;
+    });
+    await _commit();
+  }
+
+  /// Renames an event, and every node at either end of it.
+  ///
+  /// The nodes hold the name as a literal, so renaming only the declaration
+  /// would leave a Call raising something nothing listens for — and an event
+  /// nobody hears is not an error, so nothing would say so.
+  Future<void> _renameEvent(
+    Blueprint blueprint,
+    VisualScriptEventSpec event,
+    String name,
+  ) async {
+    final wanted = name.trim();
+    if (wanted.isEmpty || wanted == event.name) return;
+    if (blueprint.events.any((other) => other.name == wanted)) return;
+    final index = blueprint.events.indexOf(event);
+    if (index < 0) return;
+    setState(() {
+      blueprint.events[index] = VisualScriptEventSpec(
+        name: wanted,
+        parameters: event.parameters,
+      );
+      for (final graph in blueprint.graphs) {
+        for (final node in graph.nodes) {
+          if (node.literals[namedEventKey] == event.name) {
+            node.literals[namedEventKey] = wanted;
+          }
+        }
+      }
+      _selectedEvent = wanted;
+    });
+    await _commit();
+  }
+
+  Future<void> _deleteEvent(
+    Blueprint blueprint,
+    VisualScriptEventSpec event,
+  ) async {
+    setState(() {
+      blueprint.events.remove(event);
+      if (_selectedEvent == event.name) _selectedEvent = null;
+    });
+    await _commit();
   }
 
   /// Puts a comment box around whatever is on screen.
@@ -855,8 +929,21 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
                         onSelectVariable: (variable) => setState(() {
                           _selectedVariable = variable.name;
                           _selected = null;
+                          _selectedEvent = null;
                           _selectedComment = null;
                         }),
+                        selectedEvent: _selectedEvent,
+                        onSelectEvent: (event) => setState(() {
+                          _selectedEvent = event.name;
+                          _selected = null;
+                          _selectedVariable = null;
+                          _selectedComment = null;
+                        }),
+                        onAddEvent: () => unawaited(_addEvent(blueprint)),
+                        onRenameEvent: (event, name) =>
+                            unawaited(_renameEvent(blueprint, event, name)),
+                        onDeleteEvent: (event) =>
+                            unawaited(_deleteEvent(blueprint, event)),
                         onAddVariable: () => unawaited(_addVariable()),
                         onRenameVariable: (variable, name) =>
                             unawaited(_renameVariable(variable, name)),
@@ -896,8 +983,10 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
                     Container(width: 1, color: editorLineColor),
                     SizedBox(
                       width: 232,
-                      child: _selectedComment != null && _selected == null
+                      child: _selected == null && _selectedComment != null
                           ? _buildCommentDetails(graph)
+                          : _selected == null && _selectedEvent != null
+                          ? _buildEventDetails(blueprint)
                           : VisualScriptInspector(
                               graph: graph,
                               registry: _registry,
@@ -912,6 +1001,10 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
                                       candidate.kind ==
                                           VisualScriptGraphKind.macro)
                                     candidate.name,
+                              ],
+                              declaredEvents: [
+                                for (final event in blueprint.events)
+                                  event.name,
                               ],
                               variable: _selectedVariable == null
                                   ? null

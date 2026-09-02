@@ -160,6 +160,44 @@ void main() {
     });
   });
 
+  group('an event\'s details', () {
+    testWidgets('declare what it carries, and start carrying nothing', (
+      tester,
+    ) async {
+      final event = VisualScriptEventSpec(name: 'Damaged');
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 280,
+              height: 500,
+              child: StatefulBuilder(
+                builder: (context, setState) => VisualScriptEventDetails(
+                  event: event,
+                  onChanged: () => setState(() {}),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(find.text('Damaged'), findsOneWidget);
+      expect(find.textContaining('bare notification'), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.add).first);
+      await tester.pump();
+      expect(event.parameters, hasLength(1));
+
+      await tester.tap(find.byIcon(Icons.add).first);
+      await tester.pump();
+      expect(
+        event.parameters.map((p) => p.id).toSet(),
+        hasLength(2),
+        reason: 'two arguments must not share an id',
+      );
+    });
+  });
+
   group('a variable\'s details', () {
     testWidgets('offer a type and a scope, with the scope explained', (
       tester,

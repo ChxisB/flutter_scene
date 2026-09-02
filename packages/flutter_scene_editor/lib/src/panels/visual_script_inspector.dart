@@ -100,6 +100,24 @@ final Map<String, List<VisualScriptSetting>> visualScriptSettings = {
       doc: 'How many ways the pulse can go.',
     ),
   ],
+  'event.custom': const [
+    VisualScriptSetting(
+      key: namedEventKey,
+      label: 'Event',
+      type: VisualScriptType.string,
+      doc: 'Which declared event this listens for.',
+      optionsFrom: VisualScriptSettingOptions.declaredEvents,
+    ),
+  ],
+  'flow.callEvent': const [
+    VisualScriptSetting(
+      key: namedEventKey,
+      label: 'Event',
+      type: VisualScriptType.string,
+      doc: 'Which declared event to raise.',
+      optionsFrom: VisualScriptSettingOptions.declaredEvents,
+    ),
+  ],
   'function.call': const [
     VisualScriptSetting(
       key: calledGraphKey,
@@ -133,6 +151,9 @@ final VisualScriptSetting _scopeSetting = VisualScriptSetting(
 enum VisualScriptSettingOptions {
   /// Every function and macro in the blueprint being edited.
   callableGraphs,
+
+  /// Every event the blueprint declares.
+  declaredEvents,
 }
 
 /// Edits one node's values, or says what to do when none is selected.
@@ -145,6 +166,7 @@ class VisualScriptInspector extends StatelessWidget {
     required this.onChanged,
     this.graphs,
     this.callableGraphs = const [],
+    this.declaredEvents = const [],
     this.variable,
     this.onVariableChanged,
     this.onGraphChanged,
@@ -161,6 +183,9 @@ class VisualScriptInspector extends StatelessWidget {
 
   /// The functions and macros a Call node in this blueprint could name.
   final List<String> callableGraphs;
+
+  /// The events an On Event or a Call Event could name.
+  final List<String> declaredEvents;
 
   /// The variable whose details to show, when one is picked rather than a
   /// node. A node wins: it is the more specific selection.
@@ -184,6 +209,7 @@ class VisualScriptInspector extends StatelessWidget {
   List<String> _optionsFor(VisualScriptSetting setting) =>
       switch (setting.optionsFrom) {
         VisualScriptSettingOptions.callableGraphs => callableGraphs,
+        VisualScriptSettingOptions.declaredEvents => declaredEvents,
         null => setting.options,
       };
 

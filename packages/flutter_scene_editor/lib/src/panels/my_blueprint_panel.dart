@@ -28,7 +28,12 @@ class MyBlueprintPanel extends StatelessWidget {
     required this.onRenameVariable,
     required this.onDeleteVariable,
     required this.onSelectVariable,
+    required this.onAddEvent,
+    required this.onRenameEvent,
+    required this.onDeleteEvent,
+    required this.onSelectEvent,
     this.selectedVariable,
+    this.selectedEvent,
   });
 
   final Blueprint blueprint;
@@ -51,6 +56,14 @@ class MyBlueprintPanel extends StatelessWidget {
 
   /// The variable whose details are showing, by name.
   final String? selectedVariable;
+
+  final VoidCallback onAddEvent;
+  final void Function(VisualScriptEventSpec event, String name) onRenameEvent;
+  final ValueChanged<VisualScriptEventSpec> onDeleteEvent;
+  final ValueChanged<VisualScriptEventSpec> onSelectEvent;
+
+  /// The event whose details are showing, by name.
+  final String? selectedEvent;
 
   /// The kinds shown as their own sections, in the order they are reached for.
   static const List<VisualScriptGraphKind> _sections = [
@@ -140,10 +153,63 @@ class MyBlueprintPanel extends StatelessWidget {
                 ),
             ],
           ),
+          _Section(
+            label: 'Events',
+            onAdd: onAddEvent,
+            addTooltip: 'Add an event',
+            children: [
+              if (blueprint.events.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Text(
+                    'An event is something one part of a graph tells the '
+                    'others about, along with whatever it carries.',
+                    style: editorMicroText,
+                  ),
+                ),
+              for (final event in blueprint.events)
+                _EventRow(
+                  event: event,
+                  selected: event.name == selectedEvent,
+                  onTap: () => onSelectEvent(event),
+                  onDelete: () => onDeleteEvent(event),
+                  onRename: (name) => onRenameEvent(event, name),
+                ),
+            ],
+          ),
         ],
       ),
     );
   }
+}
+
+class _EventRow extends StatelessWidget {
+  const _EventRow({
+    required this.event,
+    required this.onRename,
+    required this.onDelete,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final VisualScriptEventSpec event;
+  final ValueChanged<String> onRename;
+  final VoidCallback onDelete;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => _Row(
+    icon: Icons.podcasts,
+    label: event.name,
+    detail: event.parameters.isEmpty
+        ? 'carries nothing'
+        : event.parameters.map((p) => p.type.label).join(', '),
+    selected: selected,
+    onTap: onTap,
+    onRename: onRename,
+    onDelete: onDelete,
+  );
 }
 
 class _Section extends StatelessWidget {

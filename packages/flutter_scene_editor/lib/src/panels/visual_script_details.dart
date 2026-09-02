@@ -318,6 +318,60 @@ class _ParameterRowState extends State<_ParameterRow> {
   );
 }
 
+/// Edits a declared event: what it carries.
+///
+/// The declaration is the contract between the node that calls the event and
+/// every node that listens for it, so this is the only place either end's
+/// pins come from.
+class VisualScriptEventDetails extends StatelessWidget {
+  const VisualScriptEventDetails({
+    super.key,
+    required this.event,
+    required this.onChanged,
+  });
+
+  final VisualScriptEventSpec event;
+  final VoidCallback onChanged;
+
+  String _freeId() {
+    final taken = {for (final entry in event.parameters) entry.id};
+    for (var i = 1; ; i++) {
+      if (!taken.contains('a$i')) return 'a$i';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => ListView(
+    padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
+    children: [
+      const SizedBox(height: 8),
+      Text(event.name, style: editorSubheadText),
+      const SizedBox(height: 4),
+      Text(
+        'Call Event raises this, and every On Event listening for it runs '
+        'before the caller continues.',
+        style: editorMicroText,
+      ),
+      _ParameterSection(
+        label: 'Carries',
+        empty: 'Nothing. The event is a bare notification.',
+        entries: event.parameters,
+        onAdd: () {
+          event.parameters.add(
+            VisualScriptParameter(
+              id: _freeId(),
+              name: 'Value',
+              type: VisualScriptType.number,
+            ),
+          );
+          onChanged();
+        },
+        onChanged: onChanged,
+      ),
+    ],
+  );
+}
+
 /// Edits a comment box: what it says, and which colour it is.
 class VisualScriptCommentDetails extends StatefulWidget {
   const VisualScriptCommentDetails({
