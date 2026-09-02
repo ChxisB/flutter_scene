@@ -718,6 +718,28 @@ void main() {
       }
     });
 
+    test('a node whose shape is dynamic still has unique pin ids', () {
+      // The fixed list is what a fresh node has; `pinsFor` is what it has once
+      // something was typed into it, and only the second one is what a wire
+      // actually lands on.
+      final graph = VisualScriptGraph();
+      for (final type in standardVisualScriptNodes) {
+        if (type.pinsFor == null) continue;
+        final node = graph.add(type.id)
+          ..literals['cases'] = <Object?>['one', 'two', 'three']
+          ..literals['count'] = 5;
+        final ids = <String>{};
+        for (final pin in type.pinsOf(node)) {
+          expect(ids.add(pin.id), isTrue, reason: '${type.id}.${pin.id}');
+          expect(
+            RegExp(r'^[A-Za-z0-9_]+$').hasMatch(pin.id),
+            isTrue,
+            reason: '${type.id}.${pin.id} must be writable in a blueprint',
+          );
+        }
+      }
+    });
+
     test('an event has no exec input; everything else that flows has one', () {
       for (final type in standardVisualScriptNodes) {
         final execIn = type.inputs.any(

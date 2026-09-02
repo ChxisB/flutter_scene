@@ -12,7 +12,9 @@ import 'dart:math' as math;
 import 'package:vector_math/vector_math.dart';
 
 import 'visual_script_control.dart';
+import 'visual_script_data.dart';
 import 'visual_script_graph.dart';
+import 'visual_script_math.dart';
 import 'visual_script_runtime.dart';
 
 VisualScriptResult _out(Map<String, Object?> outputs) =>
@@ -893,6 +895,8 @@ final List<VisualScriptNodeType> standardVisualScriptNodes = [
   breakVector,
   addVectors,
   scaleVector,
+  ...mathVisualScriptNodes,
+  ...dataVisualScriptNodes,
   printValue,
 ];
 
