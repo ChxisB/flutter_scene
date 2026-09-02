@@ -782,6 +782,50 @@ void main() {
       expect(restored.variable('speed')!.type, VisualScriptType.number);
     });
 
+    test('every value a pin can carry survives the text form', () {
+      final graph = VisualScriptGraph();
+      final node = graph.add('debug.print')
+        ..literals['vec2'] = Vector2(1, -2.5)
+        ..literals['vec3'] = Vector3(1, 2, 3)
+        ..literals['vec4'] = Vector4(1, 2, 3, 4)
+        ..literals['quat'] = Quaternion(0, 0.7071, 0, 0.7071)
+        ..literals['list'] = <Object?>[1, 'two', Vector3(3, 3, 3)]
+        ..literals['map'] = <String, Object?>{'a': 1, 'b': Vector2(2, 2)};
+
+      final restored = parseBlueprint(printBlueprint(graph)).graph;
+      final again = restored.nodes.single.literals;
+      expect(again['vec2'], Vector2(1, -2.5));
+      expect(again['vec3'], Vector3(1, 2, 3));
+      expect(again['vec4'], Vector4(1, 2, 3, 4));
+      expect(again['quat'], Quaternion(0, 0.7071, 0, 0.7071));
+      expect(again['list'], [1, 'two', Vector3(3, 3, 3)]);
+      expect(again['map'], {'a': 1, 'b': Vector2(2, 2)});
+      // Source sorts a node's literals, so compare the set rather than the
+      // order.
+      expect(again.keys.toSet(), node.literals.keys.toSet());
+    });
+
+    test('every value a pin can carry survives JSON', () {
+      final graph = VisualScriptGraph();
+      graph.add('debug.print')
+        ..literals['vec2'] = Vector2(1, -2.5)
+        ..literals['vec4'] = Vector4(1, 2, 3, 4)
+        ..literals['quat'] = Quaternion(0, 0.7071, 0, 0.7071)
+        // A list of vectors is the case a bare-list encoding would lose: the
+        // elements have to be tagged individually.
+        ..literals['list'] = <Object?>[Vector3(1, 2, 3), 4]
+        ..literals['map'] = <String, Object?>{'at': Vector3(0, 1, 0)};
+
+      final again = readVisualScript(
+        writeVisualScript(graph),
+      ).nodes.single.literals;
+      expect(again['vec2'], Vector2(1, -2.5));
+      expect(again['vec4'], Vector4(1, 2, 3, 4));
+      expect(again['quat'], Quaternion(0, 0.7071, 0, 0.7071));
+      expect(again['list'], [Vector3(1, 2, 3), 4]);
+      expect(again['map'], {'at': Vector3(0, 1, 0)});
+    });
+
     test('a second round trip is byte-identical', () {
       final graph = VisualScriptGraph();
       graph.add('event.start');

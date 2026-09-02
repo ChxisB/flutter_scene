@@ -230,8 +230,14 @@ class Blueprint {
   static const String variableSetType = 'var.set';
 
   /// A deep copy.
+  ///
+  /// [kind] and [parentClass] come along: a copy of a widget blueprint is a
+  /// widget blueprint, and a copy that quietly became a plain class parented
+  /// to `node` would run against the wrong surface.
   Blueprint copy() => Blueprint(
     name: name,
+    kind: kind,
+    parentClass: parentClass,
     variables: [
       for (final variable in variables)
         VisualScriptVariable(
@@ -311,16 +317,19 @@ class BlueprintRunner {
     return fired;
   }
 
-  /// Fires [eventType] on every event graph.
+  /// Fires [event] on every event graph.
+  ///
+  /// [where] narrows it to the event nodes it accepts, so a named event
+  /// reaches only its own listeners.
   ///
   /// Returns how many events fired, so a caller can tell a blueprint with no
   /// such event from one that ran.
-  int fire(String event) {
+  int fire(String event, {bool Function(VisualScriptNodeSpec node)? where}) {
     var fired = 0;
     for (final graph in blueprint.graphsOfKind(
       VisualScriptGraphKind.eventGraph,
     )) {
-      fired += _interpreter.fire(contextFor(graph), event);
+      fired += _interpreter.fire(contextFor(graph), event, where: where);
     }
     return fired;
   }

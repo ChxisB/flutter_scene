@@ -259,12 +259,22 @@ class VisualScriptInterpreter {
 
   /// Runs every node of type [eventType] as a starting point.
   ///
+  /// [where] narrows that to the nodes it accepts, which is how a named event
+  /// reaches only the listeners that asked for that name: two On Signal nodes
+  /// in one graph listening for different things must not both run because
+  /// one of them was raised.
+  ///
   /// Returns how many events fired, so a caller can tell a graph with no
   /// matching event from one that ran.
-  int fire(VisualScriptContext context, String eventType) {
+  int fire(
+    VisualScriptContext context,
+    String eventType, {
+    bool Function(VisualScriptNodeSpec node)? where,
+  }) {
     var fired = 0;
     for (final node in context.graph.nodes) {
       if (node.type != eventType) continue;
+      if (where != null && !where(node)) continue;
       fired++;
       _run(context, node);
     }
@@ -433,12 +443,92 @@ bool scriptBool(Object? value, [bool fallback = false]) => switch (value) {
 };
 
 /// Coerces [value] to a vector, or zero.
+///
+/// A scalar broadcasts to all three components, which is what `scale * 2`
+/// means to whoever wired it. A wider vector drops its tail rather than
+/// refusing, so a Break/Make round trip through a Vector 4 pin still works.
 /// {@category Visual scripting}
 Vector3 scriptVector(Object? value) => switch (value) {
   Vector3 v => v,
+  Vector2 v => Vector3(v.x, v.y, 0),
+  Vector4 v => Vector3(v.x, v.y, v.z),
   double v => Vector3.all(v),
   int v => Vector3.all(v.toDouble()),
   _ => Vector3.zero(),
+};
+
+/// Coerces [value] to a 2D vector, or zero.
+/// {@category Visual scripting}
+Vector2 scriptVector2(Object? value) => switch (value) {
+  Vector2 v => v,
+  Vector3 v => Vector2(v.x, v.y),
+  Vector4 v => Vector2(v.x, v.y),
+  double v => Vector2.all(v),
+  int v => Vector2.all(v.toDouble()),
+  _ => Vector2.zero(),
+};
+
+/// Coerces [value] to a 4D vector, or zero.
+///
+/// A [Vector3] gains a w of 0, which is the right answer for a direction and
+/// the wrong one for a colour; colour pins go through [scriptColor], which
+/// fills alpha with 1 instead.
+/// {@category Visual scripting}
+Vector4 scriptVector4(Object? value) => switch (value) {
+  Vector4 v => v,
+  Vector3 v => Vector4(v.x, v.y, v.z, 0),
+  Vector2 v => Vector4(v.x, v.y, 0, 0),
+  double v => Vector4.all(v),
+  int v => Vector4.all(v.toDouble()),
+  _ => Vector4.zero(),
+};
+
+/// Coerces [value] to a linear RGBA colour, defaulting to opaque white.
+///
+/// An unspecified alpha is 1, not 0: a colour wired from a Vector 3 is a
+/// colour somebody wants to see.
+/// {@category Visual scripting}
+Vector4 scriptColor(Object? value) => switch (value) {
+  Vector4 v => v,
+  Vector3 v => Vector4(v.x, v.y, v.z, 1),
+  double v => Vector4(v, v, v, 1),
+  int v => Vector4(v.toDouble(), v.toDouble(), v.toDouble(), 1),
+  _ => Vector4(1, 1, 1, 1),
+};
+
+/// Coerces [value] to a rotation, or the identity.
+///
+/// A [Vector3] is read as Euler angles in degrees, because that is what a
+/// user typing into three boxes means by a rotation.
+/// {@category Visual scripting}
+Quaternion scriptQuaternion(Object? value) => switch (value) {
+  Quaternion v => v,
+  Vector3 v => Quaternion.euler(
+    v.y * degrees2Radians,
+    v.x * degrees2Radians,
+    v.z * degrees2Radians,
+  ),
+  _ => Quaternion.identity(),
+};
+
+/// Coerces [value] to a list.
+///
+/// A single value becomes a one-element list rather than an empty one, so a
+/// For Each fed one thing iterates it. Null is the empty list.
+/// {@category Visual scripting}
+List<Object?> scriptList(Object? value) => switch (value) {
+  List<Object?> v => v,
+  Iterable<Object?> v => v.toList(),
+  null => <Object?>[],
+  _ => <Object?>[value],
+};
+
+/// Coerces [value] to a string-keyed map, or an empty one.
+/// {@category Visual scripting}
+Map<String, Object?> scriptMap(Object? value) => switch (value) {
+  Map<String, Object?> v => v,
+  Map<Object?, Object?> v => v.map((key, val) => MapEntry('$key', val)),
+  _ => <String, Object?>{},
 };
 
 /// Renders [value] the way a Print node shows it.

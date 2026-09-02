@@ -92,11 +92,23 @@ final VisualScriptNodeType onSignal = VisualScriptNodeType(
       id: 'name',
       label: 'Name',
       type: VisualScriptType.string,
-      defaultValue: 'signal',
+      defaultValue: defaultSignalName,
     ),
   ],
   evaluate: (context, node, inputs) => _then(),
 );
+
+/// The signal name an [onSignal] node listens for.
+///
+/// The default lives here rather than at each caller, so a dispatcher and the
+/// node itself cannot disagree about what an unnamed On Signal answers to.
+/// {@category Visual scripting}
+String signalNameOf(VisualScriptNodeSpec node) =>
+    '${node.literals['name'] ?? defaultSignalName}';
+
+/// What an On Signal node listens for when nothing was typed into it.
+/// {@category Visual scripting}
+const String defaultSignalName = 'signal';
 
 // ---------------------------------------------------------------------------
 // Flow Control: the conventional group for these, and the reason the node ids

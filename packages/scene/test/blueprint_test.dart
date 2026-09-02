@@ -110,6 +110,19 @@ void main() {
       expect(blueprint.variables, hasLength(1));
       expect(blueprint.graphs.single.nodes, isNotEmpty);
     });
+
+    test('a copy is still the same kind of blueprint', () {
+      // A clone that quietly reverted to a plain class parented to `node`
+      // would run against the wrong surface, and nothing would say so.
+      final blueprint = Blueprint(
+        name: 'Panel',
+        kind: BlueprintKind.widgetBlueprint,
+        parentClass: 'component',
+      );
+      final copy = blueprint.copy();
+      expect(copy.kind, BlueprintKind.widgetBlueprint);
+      expect(copy.parentClass, 'component');
+    });
   });
 
   group('running', () {

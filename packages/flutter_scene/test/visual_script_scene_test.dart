@@ -338,6 +338,58 @@ void main() {
       expect(r.log, isEmpty);
     });
 
+    test('one of two signals in a graph runs, not both', () {
+      final graph = VisualScriptGraph();
+      for (final (signalName, message) in [
+        ('open', 'opened'),
+        ('close', 'closed'),
+      ]) {
+        final signal = graph.add('event.signal')
+          ..literals['name'] = signalName;
+        final print = graph.add('debug.print')..literals['value'] = message;
+        graph.connect(
+          VisualScriptLink(
+            fromNode: signal.id,
+            fromPin: 'then',
+            toNode: print.id,
+            toPin: 'exec',
+          ),
+        );
+      }
+
+      final r = rig(graph: graph);
+      r.flow.raise('open');
+      r.flow.update(1 / 60);
+      expect(
+        r.log,
+        ['opened'],
+        reason: 'the graph has a Close listener too, and it was not raised',
+      );
+
+      r.flow.raise('close');
+      r.flow.update(1 / 60);
+      expect(r.log, ['opened', 'closed']);
+    });
+
+    test('an unnamed On Signal answers to the default name', () {
+      final graph = VisualScriptGraph();
+      final signal = graph.add('event.signal');
+      final print = graph.add('debug.print')..literals['value'] = 'ran';
+      graph.connect(
+        VisualScriptLink(
+          fromNode: signal.id,
+          fromPin: 'then',
+          toNode: print.id,
+          toPin: 'exec',
+        ),
+      );
+
+      final r = rig(graph: graph);
+      r.flow.raise(defaultSignalName);
+      r.flow.update(1 / 60);
+      expect(r.log, ['ran']);
+    });
+
     test('running false pauses without losing state', () {
       final graph = VisualScriptGraph();
       graph.variables.add(

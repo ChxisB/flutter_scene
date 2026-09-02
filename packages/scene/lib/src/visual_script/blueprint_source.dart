@@ -90,6 +90,8 @@ String _number(double value) =>
     ? value.toStringAsFixed(0)
     : '$value';
 
+String _components(List<double> values) => values.map(_number).join(', ');
+
 /// A value as it is written in source.
 String _printValue(Object? value) => switch (value) {
   null => 'null',
@@ -97,9 +99,14 @@ String _printValue(Object? value) => switch (value) {
   int() => '$value',
   double() => _number(value),
   String() => '"${value.replaceAll(r'\', r'\\').replaceAll('"', r'\"')}"',
-  Vector3() =>
-    'vec3(${_number(value.x)}, ${_number(value.y)}, ${_number(value.z)})',
-  Vector2() => 'vec2(${_number(value.x)}, ${_number(value.y)})',
+  Vector2() => 'vec2(${_components([value.x, value.y])})',
+  Vector3() => 'vec3(${_components([value.x, value.y, value.z])})',
+  Vector4() => 'vec4(${_components([value.x, value.y, value.z, value.w])})',
+  Quaternion() => 'quat(${_components([value.x, value.y, value.z, value.w])})',
+  List<Object?>() => '[${value.map(_printValue).join(', ')}]',
+  Map<Object?, Object?>() =>
+    '{${value.entries.map((e) => '${_printValue('${e.key}')}: '
+        '${_printValue(e.value)}').join(', ')}}',
   _ => '"$value"',
 };
 
@@ -171,13 +178,18 @@ final RegExp _linkPattern = RegExp(
   r'([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z0-9_]+)$',
 );
 
-final RegExp _vec3Pattern = RegExp(
-  r'^vec3\(\s*(-?[0-9.eE+-]+)\s*,\s*(-?[0-9.eE+-]+)\s*,\s*(-?[0-9.eE+-]+)\s*\)$',
-);
+/// `vec3(1, 2, 3)` and its siblings: the constructor name, then the numbers.
+/// One pattern rather than one per type, so adding a component type is a row
+/// in [_constructors] rather than another regex to keep in step.
+final RegExp _constructorPattern = RegExp(r'^([a-z][a-z0-9]*)\((.*)\)$');
 
-final RegExp _vec2Pattern = RegExp(
-  r'^vec2\(\s*(-?[0-9.eE+-]+)\s*,\s*(-?[0-9.eE+-]+)\s*\)$',
-);
+/// How many components each constructor takes, and what to build from them.
+final Map<String, (int, Object Function(List<double>))> _constructors = {
+  'vec2': (2, (v) => Vector2(v[0], v[1])),
+  'vec3': (3, (v) => Vector3(v[0], v[1], v[2])),
+  'vec4': (4, (v) => Vector4(v[0], v[1], v[2], v[3])),
+  'quat': (4, (v) => Quaternion(v[0], v[1], v[2], v[3])),
+};
 
 /// Reads a value written by [_printValue].
 Object? _parseValue(String raw) {
@@ -191,23 +203,63 @@ Object? _parseValue(String raw) {
         .replaceAll(r'\"', '"')
         .replaceAll(r'\\', r'\');
   }
-  final vec3 = _vec3Pattern.firstMatch(text);
-  if (vec3 != null) {
-    return Vector3(
-      double.parse(vec3.group(1)!),
-      double.parse(vec3.group(2)!),
-      double.parse(vec3.group(3)!),
-    );
+  if (text.startsWith('[') && text.endsWith(']')) {
+    return _splitArguments(
+      text.substring(1, text.length - 1),
+    ).map(_parseValue).toList();
   }
-  final vec2 = _vec2Pattern.firstMatch(text);
-  if (vec2 != null) {
-    return Vector2(double.parse(vec2.group(1)!), double.parse(vec2.group(2)!));
+  if (text.startsWith('{') && text.endsWith('}')) {
+    final out = <String, Object?>{};
+    for (final entry in _splitArguments(text.substring(1, text.length - 1))) {
+      final colon = _keySplit(entry);
+      if (colon == null) continue;
+      out['${_parseValue(entry.substring(0, colon))}'] = _parseValue(
+        entry.substring(colon + 1),
+      );
+    }
+    return out;
+  }
+  final constructor = _constructorPattern.firstMatch(text);
+  if (constructor != null) {
+    final shape = _constructors[constructor.group(1)!];
+    if (shape != null) {
+      final parts = _splitArguments(constructor.group(2)!);
+      final numbers = [for (final part in parts) double.tryParse(part)];
+      if (numbers.length == shape.$1 && !numbers.contains(null)) {
+        return shape.$2([for (final number in numbers) number!]);
+      }
+    }
   }
   final number = num.tryParse(text);
   if (number != null) return number is int ? number : number.toDouble();
   // Anything else is taken as the text it is, so a value this build does not
   // know about survives being read and written rather than becoming null.
   return text;
+}
+
+/// Where the `:` separating a map entry's key from its value sits, skipping
+/// any inside a quoted key or a nested collection, or null when there is none.
+int? _keySplit(String entry) {
+  var depth = 0;
+  var quoted = false;
+  var escaped = false;
+  for (var i = 0; i < entry.length; i++) {
+    final char = entry[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char == r'\') {
+      escaped = true;
+      continue;
+    }
+    if (char == '"') quoted = !quoted;
+    if (quoted) continue;
+    if (char == '(' || char == '[' || char == '{') depth++;
+    if (char == ')' || char == ']' || char == '}') depth--;
+    if (char == ':' && depth == 0) return i;
+  }
+  return null;
 }
 
 /// Splits an argument list on commas that are not inside quotes or brackets.
@@ -231,8 +283,8 @@ List<String> _splitArguments(String source) {
     }
     if (char == '"') quoted = !quoted;
     if (!quoted) {
-      if (char == '(' || char == '[') depth++;
-      if (char == ')' || char == ']') depth--;
+      if (char == '(' || char == '[' || char == '{') depth++;
+      if (char == ')' || char == ']' || char == '}') depth--;
       if (char == ',' && depth == 0) {
         parts.add(buffer.toString());
         buffer.clear();

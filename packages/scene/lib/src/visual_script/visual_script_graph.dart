@@ -22,10 +22,31 @@ enum VisualScriptType {
   number('Number'),
   integer('Integer'),
   string('String'),
+  vector2('Vector 2'),
   vector3('Vector'),
+  vector4('Vector 4'),
+
+  /// A rotation, carried as a quaternion rather than the Euler angles a pin
+  /// might show, so composing two of them does not depend on an order.
+  quaternion('Rotation'),
+
+  /// Linear RGBA, in the same space the renderer works in. Distinct from
+  /// [vector4] so the editor can show a swatch rather than four numbers.
+  color('Color'),
+
+  /// An ordered collection. The elements are whatever was put in them: a
+  /// list pin says "several", not "several of one type".
+  list('List'),
+
+  /// A string-keyed collection, for the same reason.
+  dictionary('Dictionary'),
 
   /// A reference to a scene node, by the document id the host resolves.
   nodeRef('Node'),
+
+  /// A reference to a project asset, by the key the host resolves — a prefab
+  /// to instantiate, a graph to run, a clip to play.
+  assetRef('Asset'),
 
   /// Accepts anything. A pin of this type connects to any other, and what
   /// actually arrives is whatever the source produced.
@@ -36,13 +57,26 @@ enum VisualScriptType {
   /// The name shown on a pin's tooltip and in an error.
   final String label;
 
+  /// The types a value of this type may flow into without a conversion node,
+  /// beyond its own type and [any].
+  ///
+  /// Widening only, and only where the wider type loses nothing. Integer
+  /// flows into number because every integer is a number; the reverse is not
+  /// allowed, since silently truncating an index is the kind of thing that
+  /// shows up three systems later. Colour and Vector 4 are the same four
+  /// numbers and differ only in how a pin draws them, so they pass both ways.
+  Set<VisualScriptType> get _widensTo => switch (this) {
+    VisualScriptType.integer => const {VisualScriptType.number},
+    VisualScriptType.color => const {VisualScriptType.vector4},
+    VisualScriptType.vector4 => const {VisualScriptType.color},
+    _ => const {},
+  };
+
   /// Whether a link from a pin of this type may land on [target].
   ///
   /// Exec only ever connects to exec. [any] connects both ways, which is what
-  /// lets a Print or a Branch condition take whatever is to hand. Integer
-  /// flows into number, because every integer is a number; the reverse is not
-  /// allowed, since silently truncating an index is the kind of thing that
-  /// shows up three systems later.
+  /// lets a Print or a Branch condition take whatever is to hand. Everything
+  /// else is its own type or a widening from [_widensTo].
   bool connectsTo(VisualScriptType target) {
     if (this == VisualScriptType.exec || target == VisualScriptType.exec) {
       return this == target;
@@ -51,8 +85,7 @@ enum VisualScriptType {
       return true;
     }
     if (this == target) return true;
-    return this == VisualScriptType.integer &&
-        target == VisualScriptType.number;
+    return _widensTo.contains(target);
   }
 }
 

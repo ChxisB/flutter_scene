@@ -229,18 +229,14 @@ class VisualScriptComponent extends Component {
     if (host.pendingSignals.isNotEmpty) {
       final raised = Set.of(host.pendingSignals);
       host.pendingSignals.clear();
-      for (final graph in runner.blueprint.graphsOfKind(
-        VisualScriptGraphKind.eventGraph,
-      )) {
-        for (final node in graph.nodes) {
-          if (node.type != onSignal.id) continue;
-          final name = '${node.literals['name'] ?? 'signal'}';
-          if (raised.contains(name)) {
-            runner.fire(onSignal.id);
-            break;
-          }
-        }
-      }
+      // Only the nodes listening for a name that was raised. Firing the event
+      // type wholesale would run every On Signal in the blueprint whenever any
+      // signal arrived, which is the kind of thing that looks like it works
+      // until there are two of them.
+      runner.fire(
+        onSignal.id,
+        where: (node) => raised.contains(signalNameOf(node)),
+      );
     }
 
     final failure = runner.error;

@@ -151,28 +151,63 @@ VisualScriptGraph readVisualScript(String source) {
   return decodeVisualScript(decoded.cast<String, Object?>());
 }
 
-/// Vectors are the one value that is not already JSON, so they are tagged
-/// rather than written as a bare list, which would decode as a list.
+/// Vectors and rotations are the values that are not already JSON, so each is
+/// tagged rather than written as a bare list, which would decode as a list —
+/// and a list is now a value in its own right, so the ambiguity would be real.
+///
+/// Lists and maps carry no tag: they encode as themselves, element by element,
+/// so a list of vectors survives.
 Object? _encodeValue(Object? value) => switch (value) {
+  Vector2 v => {
+    r'$vec2': [v.x, v.y],
+  },
   Vector3 v => {
     r'$vec3': [v.x, v.y, v.z],
   },
+  Vector4 v => {
+    r'$vec4': [v.x, v.y, v.z, v.w],
+  },
+  Quaternion v => {
+    r'$quat': [v.x, v.y, v.z, v.w],
+  },
+  List<Object?> v => v.map(_encodeValue).toList(),
+  Map<Object?, Object?> v => v.map(
+    (key, val) => MapEntry('$key', _encodeValue(val)),
+  ),
   _ => value,
 };
 
 Object? _decodeValue(Object? value) {
+  if (value is List) return value.map(_decodeValue).toList();
   if (value is Map) {
-    final tagged = value[r'$vec3'];
-    if (tagged is List && tagged.length >= 3) {
-      return Vector3(
-        _double(tagged[0]),
-        _double(tagged[1]),
-        _double(tagged[2]),
-      );
+    for (final entry in _vectorTags.entries) {
+      final tagged = value[entry.key];
+      if (tagged is List && tagged.length >= entry.value.$1) {
+        return entry.value.$2(tagged);
+      }
     }
+    return value
+        .map((key, val) => MapEntry('$key', _decodeValue(val)))
+        .cast<String, Object?>();
   }
   return value;
 }
+
+/// Each tag, the arity it needs, and how to rebuild it. Checked in order, so
+/// a hand-written file carrying two tags resolves the same way every time.
+final Map<String, (int, Object Function(List<Object?>))> _vectorTags = {
+  r'$vec2': (2, (v) => Vector2(_double(v[0]), _double(v[1]))),
+  r'$vec3': (3, (v) => Vector3(_double(v[0]), _double(v[1]), _double(v[2]))),
+  r'$vec4': (
+    4,
+    (v) => Vector4(_double(v[0]), _double(v[1]), _double(v[2]), _double(v[3])),
+  ),
+  r'$quat': (
+    4,
+    (v) =>
+        Quaternion(_double(v[0]), _double(v[1]), _double(v[2]), _double(v[3])),
+  ),
+};
 
 double _double(Object? value) => value is num ? value.toDouble() : 0;
 

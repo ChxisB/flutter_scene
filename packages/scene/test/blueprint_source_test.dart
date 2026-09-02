@@ -293,8 +293,8 @@ a = debug.print() @ 0, 0
     });
 
     test('an unknown variable type is reported', () {
-      final result = parseBlueprint('var x: quaternion = 1');
-      expect(result.diagnostics.single.message, contains('quaternion'));
+      final result = parseBlueprint('var x: matrix4 = 1');
+      expect(result.diagnostics.single.message, contains('matrix4'));
     });
 
     test('an argument with no pin name is reported', () {
