@@ -18,6 +18,7 @@ import 'package:vector_math/vector_math.dart'
 
 import '../shell/editor_theme.dart';
 import '../shell/panel_chrome.dart';
+import 'visual_script_details.dart';
 import 'visual_script_layout.dart' show visualScriptTypeColor;
 
 /// A value written into a node that is not a pin.
@@ -144,6 +145,9 @@ class VisualScriptInspector extends StatelessWidget {
     required this.onChanged,
     this.graphs,
     this.callableGraphs = const [],
+    this.variable,
+    this.onVariableChanged,
+    this.onGraphChanged,
   });
 
   final VisualScriptGraph graph;
@@ -157,6 +161,16 @@ class VisualScriptInspector extends StatelessWidget {
 
   /// The functions and macros a Call node in this blueprint could name.
   final List<String> callableGraphs;
+
+  /// The variable whose details to show, when one is picked rather than a
+  /// node. A node wins: it is the more specific selection.
+  final VisualScriptVariable? variable;
+
+  /// Called with the variable that should replace [variable].
+  final ValueChanged<VisualScriptVariable>? onVariableChanged;
+
+  /// Called after the graph's own details were edited.
+  final VoidCallback? onGraphChanged;
 
   /// What the selected node takes its shape from.
   VisualScriptShapeContext get _shape =>
@@ -176,7 +190,22 @@ class VisualScriptInspector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final selected = node;
-    if (selected == null) return const _NothingSelected();
+    if (selected == null) {
+      // Nothing on the canvas is picked, so the panel falls back to whatever
+      // else is: a variable from the sidebar, or the graph itself. An empty
+      // details panel beside a graph that has a name, a signature and a
+      // purity is a wasted column.
+      if (variable case final picked?) {
+        return VisualScriptVariableDetails(
+          variable: picked,
+          onReplace: onVariableChanged ?? (_) {},
+        );
+      }
+      if (onGraphChanged case final commit?) {
+        return VisualScriptGraphDetails(graph: graph, onChanged: commit);
+      }
+      return const _NothingSelected();
+    }
     final type = registry[selected.type];
     if (type == null) return _UnknownType(id: selected.type);
 

@@ -27,6 +27,8 @@ class MyBlueprintPanel extends StatelessWidget {
     required this.onAddVariable,
     required this.onRenameVariable,
     required this.onDeleteVariable,
+    required this.onSelectVariable,
+    this.selectedVariable,
   });
 
   final Blueprint blueprint;
@@ -43,6 +45,12 @@ class MyBlueprintPanel extends StatelessWidget {
   final void Function(VisualScriptVariable variable, String name)
   onRenameVariable;
   final ValueChanged<VisualScriptVariable> onDeleteVariable;
+
+  /// Clicking a variable shows its details, the way clicking a node does.
+  final ValueChanged<VisualScriptVariable> onSelectVariable;
+
+  /// The variable whose details are showing, by name.
+  final String? selectedVariable;
 
   /// The kinds shown as their own sections, in the order they are reached for.
   static const List<VisualScriptGraphKind> _sections = [
@@ -125,6 +133,8 @@ class MyBlueprintPanel extends StatelessWidget {
               for (final variable in blueprint.variables)
                 _VariableRow(
                   variable: variable,
+                  selected: variable.name == selectedVariable,
+                  onTap: () => onSelectVariable(variable),
                   onDelete: () => onDeleteVariable(variable),
                   onRename: (name) => onRenameVariable(variable, name),
                 ),
@@ -215,19 +225,27 @@ class _VariableRow extends StatelessWidget {
     required this.variable,
     required this.onRename,
     required this.onDelete,
+    required this.selected,
+    required this.onTap,
   });
 
   final VisualScriptVariable variable;
   final ValueChanged<String> onRename;
   final VoidCallback onDelete;
+  final bool selected;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) => _Row(
     icon: Icons.data_object,
     label: variable.name,
-    detail: variable.type.label,
-    selected: false,
-    onTap: null,
+    // The scope is worth showing beside the type: two variables of the same
+    // type in different scopes are different variables.
+    detail: variable.scope == VisualScriptVariableScope.graph
+        ? variable.type.label
+        : '${variable.type.label} · ${variable.scope.label}',
+    selected: selected,
+    onTap: onTap,
     onRename: onRename,
     onDelete: onDelete,
   );

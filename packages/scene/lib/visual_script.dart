@@ -52,6 +52,8 @@ export 'src/visual_script/visual_script_control.dart'
         multiGate,
         multiGateCountOf,
         multiGatePin,
+        reroute,
+        rerouteExec,
         forEachLoop,
         forLoop,
         maxLoopIterations,
@@ -106,6 +108,7 @@ export 'src/visual_script/visual_script_functions.dart'
         functionVisualScriptNodes;
 export 'src/visual_script/visual_script_graph.dart'
     show
+        VisualScriptComment,
         VisualScriptGraph,
         VisualScriptGraphKind,
         VisualScriptGraphLookup,

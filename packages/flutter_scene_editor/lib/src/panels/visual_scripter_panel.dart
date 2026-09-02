@@ -12,6 +12,7 @@
 library;
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -24,6 +25,7 @@ import '../blueprints/blueprint_file.dart';
 import '../controller/editor_controller.dart';
 import '../shell/editor_theme.dart';
 import 'my_blueprint_panel.dart';
+import 'visual_script_details.dart';
 import 'visual_script_inspector.dart';
 import 'visual_script_layout.dart';
 import 'visual_script_palette.dart';
@@ -92,6 +94,12 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
 
   int? _selected;
 
+  /// The variable whose details are showing, by name, or null.
+  ///
+  /// Selecting a node clears it and vice versa: the details panel shows one
+  /// thing, and two selections would leave it showing the older one.
+  String? _selectedVariable;
+
   /// Whether the canvas shows what the live graph is doing.
   ///
   /// Off by default: tracing rebuilds the run's context, which restarts the
@@ -99,6 +107,16 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
   bool _tracing = false;
   int? _dragging;
   Offset _dragOffset = Offset.zero;
+
+  /// The comment being moved, and the nodes moving with it.
+  int? _movingComment;
+  List<VisualScriptNodeSpec> _movingWith = const [];
+
+  /// The comment being resized.
+  int? _resizingComment;
+
+  /// The comment whose details are showing, or null.
+  int? _selectedComment;
 
   /// The wire being drawn, if any: where it started and where the pointer is.
   VisualScriptPortRef? _wireFrom;
@@ -345,23 +363,88 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
       return;
     }
 
+    final grip = layout.commentGripAt(at);
+    if (grip != null) {
+      setState(() {
+        _resizingComment = grip;
+        _dragOffset = at;
+      });
+      return;
+    }
+    final header = layout.commentHeaderAt(at);
+    if (header != null) {
+      final comment = graph.comment(header)!;
+      setState(() {
+        _selected = null;
+        _selectedVariable = null;
+        _selectedComment = header;
+        _movingComment = header;
+        // Captured on grab rather than recomputed as it moves: a node that
+        // leaves the box mid-drag should keep moving with it, not be dropped
+        // the moment it crosses the edge.
+        _movingWith = layout.nodesInside(comment);
+        _dragOffset = at - Offset(comment.position.x, comment.position.y);
+      });
+      return;
+    }
+
     final node = layout.nodeAt(at);
     if (node != null) {
       final spec = graph.node(node)!;
       setState(() {
         _selected = node;
+        _selectedVariable = null;
+        _selectedComment = null;
         _dragging = node;
         _dragOffset = at - Offset(spec.position.x, spec.position.y);
       });
       return;
     }
-    setState(() => _selected = null);
+    setState(() {
+      _selected = null;
+      _selectedVariable = null;
+      _selectedComment = null;
+    });
   }
 
   void _onPointerMove(PointerMoveEvent event, VisualScriptGraph graph) {
     final at = _toCanvas(event.localPosition);
     if (_wireFrom != null) {
       setState(() => _wirePointer = at);
+      return;
+    }
+    final moving = _movingComment;
+    if (moving != null) {
+      final comment = graph.comment(moving);
+      if (comment == null) return;
+      final to = at - _dragOffset;
+      final by = to - Offset(comment.position.x, comment.position.y);
+      setState(() {
+        comment.position.setValues(to.dx, to.dy);
+        for (final node in _movingWith) {
+          node.position.setValues(
+            node.position.x + by.dx,
+            node.position.y + by.dy,
+          );
+        }
+      });
+      return;
+    }
+    final resizing = _resizingComment;
+    if (resizing != null) {
+      final comment = graph.comment(resizing);
+      if (comment == null) return;
+      setState(() {
+        // A floor, so a comment cannot be shrunk to something with no header
+        // left to grab.
+        comment.size.setValues(
+          math.max(80, at.dx - comment.position.x),
+          math.max(
+            visualScriptCommentHeaderHeight + 20,
+            at.dy - comment.position.y,
+          ),
+        );
+      });
       return;
     }
     final dragging = _dragging;
@@ -450,6 +533,15 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
       await _commit();
       return;
     }
+    if (_movingComment != null || _resizingComment != null) {
+      setState(() {
+        _movingComment = null;
+        _resizingComment = null;
+        _movingWith = const [];
+      });
+      await _commit();
+      return;
+    }
     if (_dragging != null) {
       setState(() => _dragging = null);
       await _commit();
@@ -514,6 +606,51 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
         node.literals[key] = value;
       }
     });
+    await _commit();
+  }
+
+  /// Puts [next] in place of the variable of the same name.
+  ///
+  /// The name is the identity here, because that is what a Get and a Set node
+  /// hold; everything else about a variable is editable in place.
+  Widget _buildCommentDetails(VisualScriptGraph graph) {
+    final comment = graph.comment(_selectedComment!);
+    if (comment == null) return const SizedBox.shrink();
+    return VisualScriptCommentDetails(
+      comment: comment,
+      onChanged: () => unawaited(_commit()),
+      onDelete: () {
+        setState(() {
+          graph.comments.remove(comment);
+          _selectedComment = null;
+        });
+        unawaited(_commit());
+      },
+    );
+  }
+
+  /// Puts a comment box around whatever is on screen.
+  Future<void> _addComment(VisualScriptGraph graph) async {
+    final centre = _toCanvas(
+      Offset(context.size?.width ?? 400, context.size?.height ?? 300) / 2,
+    );
+    final comment = graph.addComment(
+      position: Vector2(centre.dx - 120, centre.dy - 80),
+    );
+    setState(() {
+      _selected = null;
+      _selectedComment = comment.id;
+    });
+    await _commit();
+  }
+
+  Future<void> _replaceVariable(
+    Blueprint blueprint,
+    VisualScriptVariable next,
+  ) async {
+    final index = blueprint.variables.indexWhere((v) => v.name == next.name);
+    if (index < 0) return;
+    setState(() => blueprint.variables[index] = next);
     await _commit();
   }
 
@@ -714,6 +851,12 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
                             unawaited(_renameGraph(target, name)),
                         onDeleteGraph: (target) =>
                             unawaited(_deleteGraph(target)),
+                        selectedVariable: _selectedVariable,
+                        onSelectVariable: (variable) => setState(() {
+                          _selectedVariable = variable.name;
+                          _selected = null;
+                          _selectedComment = null;
+                        }),
                         onAddVariable: () => unawaited(_addVariable()),
                         onRenameVariable: (variable, name) =>
                             unawaited(_renameVariable(variable, name)),
@@ -753,21 +896,36 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
                     Container(width: 1, color: editorLineColor),
                     SizedBox(
                       width: 232,
-                      child: VisualScriptInspector(
-                        graph: graph,
-                        registry: _registry,
-                        node: _selected == null ? null : graph.node(_selected!),
-                        graphs: blueprint.graph,
-                        callableGraphs: [
-                          for (final candidate in blueprint.graphs)
-                            if (candidate.kind ==
-                                    VisualScriptGraphKind.function ||
-                                candidate.kind == VisualScriptGraphKind.macro)
-                              candidate.name,
-                        ],
-                        onChanged: (key, value) =>
-                            unawaited(_setLiteral(graph, key, value)),
-                      ),
+                      child: _selectedComment != null && _selected == null
+                          ? _buildCommentDetails(graph)
+                          : VisualScriptInspector(
+                              graph: graph,
+                              registry: _registry,
+                              node: _selected == null
+                                  ? null
+                                  : graph.node(_selected!),
+                              graphs: blueprint.graph,
+                              callableGraphs: [
+                                for (final candidate in blueprint.graphs)
+                                  if (candidate.kind ==
+                                          VisualScriptGraphKind.function ||
+                                      candidate.kind ==
+                                          VisualScriptGraphKind.macro)
+                                    candidate.name,
+                              ],
+                              variable: _selectedVariable == null
+                                  ? null
+                                  : blueprint.variables
+                                        .where(
+                                          (v) => v.name == _selectedVariable,
+                                        )
+                                        .firstOrNull,
+                              onVariableChanged: (next) =>
+                                  unawaited(_replaceVariable(blueprint, next)),
+                              onGraphChanged: () => unawaited(_commit()),
+                              onChanged: (key, value) =>
+                                  unawaited(_setLiteral(graph, key, value)),
+                            ),
                     ),
                   ],
                 ),
@@ -830,6 +988,13 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
               _pan = const Offset(40, 40);
               _zoom = 1;
             }),
+          ),
+          IconButton(
+            icon: const Icon(Icons.crop_square, size: 15),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints.tightFor(width: 24, height: 24),
+            tooltip: 'Add a comment box',
+            onPressed: () => unawaited(_addComment(graph)),
           ),
           const SizedBox(width: 6),
           FilledButton.icon(

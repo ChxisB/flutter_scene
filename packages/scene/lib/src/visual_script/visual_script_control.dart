@@ -1012,11 +1012,45 @@ final VisualScriptNodeType gateFlow = VisualScriptNodeType(
 
 final math.Random _random = math.Random();
 
+// ---------------------------------------------------------------------------
+// Tidiness.
+// ---------------------------------------------------------------------------
+
+final VisualScriptNodeType reroute = VisualScriptNodeType(
+  id: 'flow.reroute',
+  label: 'Reroute',
+  category: 'Flow Control',
+  doc:
+      'Passes a value straight through. Nothing happens here — it is a place '
+      'to bend a wire around something, so a long one stays readable.',
+  pins: const [
+    VisualScriptPin(id: 'value', label: '', type: VisualScriptType.any),
+    VisualScriptPin(
+      id: 'out',
+      label: '',
+      type: VisualScriptType.any,
+      isInput: false,
+    ),
+  ],
+  evaluate: (context, node, inputs) => _out({'out': inputs['value']}),
+);
+
+final VisualScriptNodeType rerouteExec = VisualScriptNodeType(
+  id: 'flow.rerouteExec',
+  label: 'Reroute (Control)',
+  category: 'Flow Control',
+  doc: 'The same, for a control wire.',
+  pins: const [_execIn, _execOut],
+  evaluate: (context, node, inputs) => _then(),
+);
+
 /// Every control node here, for registering in one go.
 /// {@category Visual scripting}
 final List<VisualScriptNodeType> controlVisualScriptNodes = [
   breakLoop,
   doN,
+  reroute,
+  rerouteExec,
   flipFlop,
   gateFlow,
   isValid,

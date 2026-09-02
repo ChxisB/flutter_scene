@@ -52,6 +52,19 @@ Map<String, Object?> encodeVisualScript(VisualScriptGraph graph) => {
     ],
   if (graph.results.isNotEmpty)
     'results': [for (final entry in graph.results) _encodeParameter(entry)],
+  if (graph.comments.isNotEmpty)
+    'comments': [
+      for (final comment in graph.comments)
+        {
+          'id': comment.id,
+          'text': comment.text,
+          'x': comment.position.x,
+          'y': comment.position.y,
+          'w': comment.size.x,
+          'h': comment.size.y,
+          if (comment.color != 0) 'color': comment.color,
+        },
+    ],
   if (graph.variables.isNotEmpty)
     'variables': [
       for (final variable in graph.variables)
@@ -124,6 +137,20 @@ VisualScriptGraph decodeVisualScript(Map<String, Object?> json) {
     );
   }
   graph.isPure = json['pure'] == true;
+  for (final raw in (json['comments'] as List? ?? const [])) {
+    if (raw is! Map) continue;
+    final id = raw['id'];
+    if (id is! num) continue;
+    graph.comments.add(
+      VisualScriptComment(
+        id: id.toInt(),
+        text: raw['text'] is String ? raw['text']! as String : '',
+        position: Vector2(_double(raw['x']), _double(raw['y'])),
+        size: Vector2(_double(raw['w']), _double(raw['h'])),
+        color: raw['color'] is num ? (raw['color']! as num).toInt() : 0,
+      ),
+    );
+  }
   graph.parameters.addAll(_decodeParameters(json['parameters']));
   graph.results.addAll(_decodeParameters(json['results']));
   for (final raw in (json['variables'] as List? ?? const [])) {
@@ -144,9 +171,13 @@ VisualScriptGraph decodeVisualScript(Map<String, Object?> json) {
     );
   }
   // A hand-edited file can leave the counter behind the ids in use, which
-  // would hand a fresh node an id a wire already points at.
-  for (final node in graph.nodes) {
-    if (node.id >= graph.nextNodeId) graph.nextNodeId = node.id + 1;
+  // would hand a fresh node an id a wire already points at. Comments share
+  // the counter, so they are checked too.
+  for (final id in [
+    for (final node in graph.nodes) node.id,
+    for (final comment in graph.comments) comment.id,
+  ]) {
+    if (id >= graph.nextNodeId) graph.nextNodeId = id + 1;
   }
   return graph;
 }

@@ -177,6 +177,49 @@ class VisualScriptLink {
   String toString() => '$fromNode.$fromPin -> $toNode.$toPin';
 }
 
+/// A titled box drawn behind the nodes, grouping them by what they are for.
+///
+/// Purely an annotation: nothing here changes what a graph does. It is also
+/// the difference between a graph somebody else can read and one they cannot,
+/// which is why it is part of the document rather than a note kept elsewhere.
+/// {@category Visual scripting}
+class VisualScriptComment {
+  VisualScriptComment({
+    required this.id,
+    this.text = 'Comment',
+    Vector2? position,
+    Vector2? size,
+    this.color = 0,
+  }) : position = position ?? Vector2.zero(),
+       size = size ?? Vector2(240, 160);
+
+  /// Unique within the graph, so a comment can be addressed without an index
+  /// that shifts when an earlier one is deleted.
+  final int id;
+
+  /// The heading along its top edge.
+  String text;
+
+  /// The top-left corner, in the same canvas space as a node's position.
+  final Vector2 position;
+
+  /// How big the box is. Kept rather than derived from what it contains, so
+  /// an empty comment is still somewhere to put things.
+  final Vector2 size;
+
+  /// Which of the canvas's comment colours it uses, by index. Zero is the
+  /// default, and an index the editor does not have wraps rather than
+  /// failing — a document from a later build should still open.
+  int color;
+
+  /// Whether [at] is inside the box.
+  bool contains(Vector2 at) =>
+      at.x >= position.x &&
+      at.y >= position.y &&
+      at.x <= position.x + size.x &&
+      at.y <= position.y + size.y;
+}
+
 /// A graph's own variables: named values that persist across a run.
 /// {@category Visual scripting}
 class VisualScriptVariable {
@@ -368,6 +411,7 @@ class VisualScriptGraph {
     List<VisualScriptVariable>? variables,
     List<VisualScriptParameter>? parameters,
     List<VisualScriptParameter>? results,
+    List<VisualScriptComment>? comments,
     this.nextNodeId = 1,
     this.name = '',
     this.kind = VisualScriptGraphKind.eventGraph,
@@ -376,7 +420,8 @@ class VisualScriptGraph {
        links = links ?? [],
        variables = variables ?? [],
        parameters = parameters ?? [],
-       results = results ?? [];
+       results = results ?? [],
+       comments = comments ?? [];
 
   /// What this graph is called inside its blueprint.
   ///
@@ -400,6 +445,9 @@ class VisualScriptGraph {
 
   /// What it hands back.
   final List<VisualScriptParameter> results;
+
+  /// The boxes drawn behind the nodes. Ignored by everything that runs.
+  final List<VisualScriptComment> comments;
 
   /// Whether calling this graph can be done without control flow.
   ///
@@ -449,6 +497,29 @@ class VisualScriptGraph {
     );
     nodes.add(node);
     return node;
+  }
+
+  /// Adds a comment box, and returns it.
+  ///
+  /// Comments take ids from the same counter as nodes. One counter rather
+  /// than two, so an id in a saved document is unambiguous about what it
+  /// names even where both are written side by side.
+  VisualScriptComment addComment({Vector2? position, Vector2? size}) {
+    final comment = VisualScriptComment(
+      id: nextNodeId++,
+      position: position,
+      size: size,
+    );
+    comments.add(comment);
+    return comment;
+  }
+
+  /// The comment with this id, or null.
+  VisualScriptComment? comment(int id) {
+    for (final entry in comments) {
+      if (entry.id == id) return entry;
+    }
+    return null;
   }
 
   /// Removes node [id] and every wire touching it.

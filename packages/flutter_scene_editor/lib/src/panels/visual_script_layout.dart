@@ -29,6 +29,33 @@ enum _Reach {
   no,
 }
 
+/// The colours a comment box can be given, in the order the editor cycles
+/// through them. Muted on purpose: a comment sits behind the graph and must
+/// not compete with the wires crossing it.
+const List<Color> visualScriptCommentColors = [
+  Color(0xFF3A5163),
+  Color(0xFF4A4363),
+  Color(0xFF3F5B4C),
+  Color(0xFF63513A),
+  Color(0xFF633A48),
+];
+
+/// How tall a comment's title bar is, and the band that drags the whole box.
+const double visualScriptCommentHeaderHeight = 20;
+
+/// The corner square that resizes a comment.
+const double visualScriptCommentGrip = 14;
+
+/// The node types drawn as a knot on the wire rather than as a box.
+///
+/// A reroute exists to bend a wire; drawing it as a node with a header and a
+/// label would put a bigger obstacle in the way than the one it was added to
+/// route around.
+const Set<String> visualScriptRerouteTypes = {
+  'flow.reroute',
+  'flow.rerouteExec',
+};
+
 /// Node body metrics, in canvas units.
 const double visualScriptNodeWidth = 168;
 const double visualScriptHeaderHeight = 22;
@@ -95,7 +122,22 @@ class VisualScriptLayout {
   double heightOf(VisualScriptNodeSpec node) =>
       visualScriptHeaderHeight + rowsOf(node) * visualScriptRowHeight + 6;
 
+  /// Whether [node] is drawn as a knot on a wire rather than as a box.
+  bool isReroute(VisualScriptNodeSpec node) =>
+      visualScriptRerouteTypes.contains(node.type);
+
   Rect boundsOf(VisualScriptNodeSpec node) {
+    if (isReroute(node)) {
+      // A small square centred on its position, so both of its pins sit at
+      // the same point and the wire reads as continuous.
+      const half = visualScriptPortRadius + 3;
+      return Rect.fromLTWH(
+        node.position.x - half,
+        node.position.y - half,
+        half * 2,
+        half * 2,
+      );
+    }
     final type = registry[node.type];
     final height = type == null ? visualScriptHeaderHeight + 6 : heightOf(node);
     return Rect.fromLTWH(
@@ -104,6 +146,53 @@ class VisualScriptLayout {
       visualScriptNodeWidth,
       height,
     );
+  }
+
+  /// The box of the comment under [at], newest first, or null.
+  ///
+  /// Only the title bar counts: the body has to stay clickable so the nodes
+  /// inside a comment can still be picked up.
+  int? commentHeaderAt(Offset at) {
+    for (final comment in graph.comments.reversed) {
+      final header = Rect.fromLTWH(
+        comment.position.x,
+        comment.position.y,
+        comment.size.x,
+        visualScriptCommentHeaderHeight,
+      );
+      if (header.contains(at)) return comment.id;
+    }
+    return null;
+  }
+
+  /// The comment whose resize grip is under [at], or null.
+  int? commentGripAt(Offset at) {
+    for (final comment in graph.comments.reversed) {
+      final grip = Rect.fromLTWH(
+        comment.position.x + comment.size.x - visualScriptCommentGrip,
+        comment.position.y + comment.size.y - visualScriptCommentGrip,
+        visualScriptCommentGrip,
+        visualScriptCommentGrip,
+      );
+      if (grip.contains(at)) return comment.id;
+    }
+    return null;
+  }
+
+  /// The nodes wholly inside [comment], which move with it.
+  List<VisualScriptNodeSpec> nodesInside(VisualScriptComment comment) {
+    final box = Rect.fromLTWH(
+      comment.position.x,
+      comment.position.y,
+      comment.size.x,
+      comment.size.y,
+    );
+    return [
+      for (final node in graph.nodes)
+        if (box.contains(boundsOf(node).topLeft) &&
+            box.contains(boundsOf(node).bottomRight))
+          node,
+    ];
   }
 
   /// The centre of a pin, in canvas space.
@@ -115,6 +204,9 @@ class VisualScriptLayout {
     if (node == null) return null;
     final type = registry[node.type];
     if (type == null) return null;
+    // Both of a reroute's pins are the same point, which is what makes the
+    // wire through it read as one wire.
+    if (isReroute(node)) return Offset(node.position.x, node.position.y);
     final pin = type.pinOf(node, pinId, shape);
     if (pin == null) return null;
     final column = pin.isInput ? inputsOf(node) : outputsOf(node);
@@ -330,6 +422,11 @@ class VisualScriptCanvasPainter extends CustomPainter {
     canvas.translate(pan.dx, pan.dy);
     canvas.scale(zoom);
 
+    // Behind everything: a comment is a background, and a wire crossing one
+    // has to stay readable.
+    for (final comment in graph.comments) {
+      _paintComment(canvas, comment);
+    }
     for (final link in graph.links) {
       _paintWire(canvas, link);
     }
@@ -487,7 +584,93 @@ class VisualScriptCanvasPainter extends CustomPainter {
     );
   }
 
+  void _paintComment(Canvas canvas, VisualScriptComment comment) {
+    final bounds = Rect.fromLTWH(
+      comment.position.x,
+      comment.position.y,
+      comment.size.x,
+      comment.size.y,
+    );
+    // Wraps rather than fails: a document written by a later build that knows
+    // more colours should still open.
+    final colour =
+        visualScriptCommentColors[comment.color.abs() %
+            visualScriptCommentColors.length];
+    final body = RRect.fromRectAndRadius(bounds, const Radius.circular(6));
+    canvas
+      ..drawRRect(body, Paint()..color = colour.withValues(alpha: 0.16))
+      ..drawRRect(
+        body,
+        Paint()
+          ..color = colour.withValues(alpha: 0.7)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1,
+      )
+      ..save()
+      ..clipRRect(body)
+      ..drawRect(
+        Rect.fromLTWH(
+          bounds.left,
+          bounds.top,
+          bounds.width,
+          visualScriptCommentHeaderHeight,
+        ),
+        Paint()..color = colour.withValues(alpha: 0.55),
+      )
+      ..restore();
+
+    TextPainter(
+        text: TextSpan(
+          text: comment.text,
+          style: editorDetailText.copyWith(color: editorTextColor),
+        ),
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+        ellipsis: '…',
+      )
+      ..layout(maxWidth: bounds.width - 12)
+      ..paint(canvas, Offset(bounds.left + 7, bounds.top + 4));
+
+    // The resize grip, as two short strokes in the corner.
+    final corner = bounds.bottomRight;
+    final grip = Paint()
+      ..color = colour.withValues(alpha: 0.9)
+      ..strokeWidth = 1.4;
+    for (final inset in [4.0, 8.0]) {
+      canvas.drawLine(
+        Offset(corner.dx - inset, corner.dy - 3),
+        Offset(corner.dx - 3, corner.dy - inset),
+        grip,
+      );
+    }
+  }
+
+  /// A reroute, drawn as a knot on the wire rather than as a box.
+  void _paintReroute(Canvas canvas, VisualScriptNodeSpec node) {
+    final centre = Offset(node.position.x, node.position.y);
+    final pin = layout.pinsOf(node).firstOrNull;
+    final colour = visualScriptTypeColor(pin?.type ?? VisualScriptType.any);
+    canvas
+      ..drawCircle(
+        centre,
+        visualScriptPortRadius + 1.5,
+        Paint()..color = colour,
+      )
+      ..drawCircle(
+        centre,
+        visualScriptPortRadius + 1.5,
+        Paint()
+          ..color = node.id == selected ? editorAccentColor : editorSurfaceColor
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = node.id == selected ? 1.8 : 1,
+      );
+  }
+
   void _paintNode(Canvas canvas, VisualScriptNodeSpec node) {
+    if (layout.isReroute(node)) {
+      _paintReroute(canvas, node);
+      return;
+    }
     final type = registry[node.type];
     final bounds = layout.boundsOf(node);
     final isSelected = node.id == selected;

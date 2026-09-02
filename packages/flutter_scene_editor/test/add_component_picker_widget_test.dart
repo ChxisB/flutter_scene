@@ -9,11 +9,7 @@ import 'package:flutter_scene_editor/src/panels/inspector_panel.dart';
 import 'package:flutter_scene_editor/src/shell/editor_theme.dart';
 
 const Map<String, ComponentTypeInfo> _types = {
-  'directionalLight': (
-    category: 'Rendering',
-    icon: null,
-    provenance: null,
-  ),
+  'directionalLight': (category: 'Rendering', icon: null, provenance: null),
   'pointLight': (category: 'Rendering', icon: null, provenance: null),
   'rigidBody': (category: 'Physics', icon: null, provenance: null),
   'playerController': (category: null, icon: null, provenance: 'live'),
@@ -23,19 +19,19 @@ Future<void> _pump(WidgetTester tester) => tester.pumpWidget(
   forui.FTheme(
     data: editorForuiDarkTheme,
     child: MaterialApp(
-    theme: editorDarkTheme(),
-    home: Scaffold(
-      body: Center(
-        child: SizedBox(
-          width: 460,
-          height: 520,
-          child: AddComponentPicker(
-            types: _types,
-            docFor: (type) =>
-                type == 'rigidBody' ? 'Moves under forces.' : null,
+      theme: editorDarkTheme(),
+      home: Scaffold(
+        body: Center(
+          child: SizedBox(
+            width: 460,
+            height: 520,
+            child: AddComponentPicker(
+              types: _types,
+              docFor: (type) =>
+                  type == 'rigidBody' ? 'Moves under forces.' : null,
+            ),
           ),
         ),
-      ),
       ),
     ),
   ),

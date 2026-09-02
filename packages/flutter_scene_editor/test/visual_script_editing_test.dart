@@ -543,6 +543,102 @@ void main() {
     });
   });
 
+  group('comments and reroutes', () {
+    test('a comment takes an id from the same counter as a node', () {
+      // One counter for both, so an id in a saved document is unambiguous
+      // about what it names.
+      final graph = VisualScriptGraph();
+      final node = graph.add('debug.print');
+      final comment = graph.addComment();
+      expect(comment.id, isNot(node.id));
+      expect(graph.comment(comment.id), same(comment));
+    });
+
+    test('only its title bar is grabbable, so nodes inside stay clickable', () {
+      final graph = VisualScriptGraph();
+      final comment = graph.addComment(position: Vector2(0, 0));
+      final layout = VisualScriptLayout(graph, registry);
+      expect(layout.commentHeaderAt(const Offset(20, 6)), comment.id);
+      expect(
+        layout.commentHeaderAt(const Offset(20, 90)),
+        isNull,
+        reason: 'the body is not a handle',
+      );
+    });
+
+    test('its corner grip is where a resize starts', () {
+      final graph = VisualScriptGraph();
+      final comment = graph.addComment(position: Vector2(0, 0));
+      final layout = VisualScriptLayout(graph, registry);
+      expect(
+        layout.commentGripAt(Offset(comment.size.x - 4, comment.size.y - 4)),
+        comment.id,
+      );
+      expect(layout.commentGripAt(const Offset(10, 10)), isNull);
+    });
+
+    test('it collects the nodes wholly inside it, and no others', () {
+      final graph = VisualScriptGraph();
+      final comment = graph.addComment(
+        position: Vector2(0, 0),
+        size: Vector2(400, 400),
+      );
+      final inside = graph.add('debug.print', position: Vector2(20, 40));
+      final outside = graph.add('debug.print', position: Vector2(900, 40));
+      // Straddling the edge is not inside: half a node moving with the box
+      // would be worse than none.
+      final straddling = graph.add('debug.print', position: Vector2(320, 40));
+      final layout = VisualScriptLayout(graph, registry);
+      final collected = layout.nodesInside(comment).map((n) => n.id).toSet();
+      expect(collected, contains(inside.id));
+      expect(collected, isNot(contains(outside.id)));
+      expect(collected, isNot(contains(straddling.id)));
+    });
+
+    test('a reroute is a knot: both pins sit at the same point', () {
+      final graph = VisualScriptGraph();
+      final knot = graph.add('flow.reroute', position: Vector2(100, 50));
+      final layout = VisualScriptLayout(graph, registry);
+      expect(layout.isReroute(knot), isTrue);
+      expect(layout.portCentre(knot.id, 'value'), const Offset(100, 50));
+      expect(layout.portCentre(knot.id, 'out'), const Offset(100, 50));
+    });
+
+    test('and it is small enough to be a bend rather than an obstacle', () {
+      final graph = VisualScriptGraph();
+      final knot = graph.add('flow.reroute', position: Vector2(100, 50));
+      // Well clear of the knot: an overlapping node would win the hit test on
+      // paint order, which is correct and not what this is measuring.
+      final node = graph.add('debug.print', position: Vector2(400, 400));
+      final layout = VisualScriptLayout(graph, registry);
+      expect(
+        layout.boundsOf(knot).width,
+        lessThan(layout.boundsOf(node).width / 4),
+      );
+      expect(layout.nodeAt(const Offset(100, 50)), knot.id);
+    });
+
+    test('a comment survives being saved', () {
+      final graph = VisualScriptGraph();
+      graph.addComment(position: Vector2(10, 20), size: Vector2(300, 200))
+        ..text = 'Movement'
+        ..color = 2;
+      final after = readVisualScript(writeVisualScript(graph));
+      final comment = after.comments.single;
+      expect(comment.text, 'Movement');
+      expect(comment.color, 2);
+      expect(comment.position.x, 10);
+      expect(comment.size.y, 200);
+    });
+
+    test('and does not hand its id to the next node added', () {
+      final graph = VisualScriptGraph();
+      graph.addComment();
+      final after = readVisualScript(writeVisualScript(graph));
+      expect(after.add('debug.print').id, isNot(after.comments.single.id));
+    });
+  });
+
   group('the canvas draws what the node actually has', () {
     test('a Switch grows a row per case', () {
       final graph = VisualScriptGraph();
