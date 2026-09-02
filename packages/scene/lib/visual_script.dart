@@ -38,6 +38,27 @@ export 'src/visual_script/blueprint_source.dart'
         blueprintSourceVersion,
         parseBlueprint,
         printBlueprint;
+export 'src/visual_script/visual_script_control.dart'
+    show
+        breakLoop,
+        cacheValue,
+        casePin,
+        casesOf,
+        controlVisualScriptNodes,
+        forEachLoop,
+        forLoop,
+        maxLoopIterations,
+        nullCheck,
+        nullCoalesce,
+        once,
+        selectValue,
+        switchOnInteger,
+        switchOnString,
+        throwError,
+        toggleFlow,
+        toggleValue,
+        tryCatch,
+        whileLoop;
 export 'src/visual_script/visual_script_graph.dart'
     show
         VisualScriptGraph,
@@ -87,6 +108,8 @@ export 'src/visual_script/visual_script_library.dart'
         randomNumber,
         scaleVector,
         sequence,
+        sequenceCountOf,
+        sequencePin,
         setVariable,
         signalNameOf,
         sineWave,

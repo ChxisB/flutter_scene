@@ -157,6 +157,15 @@ abstract class VisualScriptFlow {
     String pinId,
   );
 
+  /// Reads an output pin in the running frame, evaluating whoever is behind
+  /// it — the same pull a wired input goes through.
+  ///
+  /// A node needs this when a value has to be re-read rather than taken from
+  /// the inputs it was handed: a While Loop's condition was resolved before
+  /// its body ran, and a loop that could not see the body change its own
+  /// condition would never end.
+  Object? pull(VisualScriptContext context, int nodeId, String pinId);
+
   /// Runs [graph] from its [entry] event, in a frame of its own, entered from
   /// [caller].
   ///
@@ -340,6 +349,13 @@ class VisualScriptContext {
 
   /// Runs a nested flow. Non-null while a run is in progress.
   VisualScriptFlow? flow;
+
+  /// Which exec input the running node was entered through.
+  ///
+  /// Most nodes have one and never ask. A node with several — a Toggle Flow's
+  /// Turn On beside its Enter, a Once's Reset — behaves differently depending
+  /// on which wire arrived, and this is the only thing that says which.
+  String enteredPin = 'exec';
 
   /// A Break or a Throw travelling outward, or null.
   ///
@@ -588,11 +604,15 @@ class VisualScriptInterpreter implements VisualScriptFlow {
     for (final link in context.graph.outputsFrom(node.id, pinId)) {
       final target = context.graph.node(link.toNode);
       if (target == null) continue;
-      final status = _run(context, target);
+      final status = _run(context, target, enteredPin: link.toPin);
       if (status != VisualScriptFlowStatus.completed) return status;
     }
     return VisualScriptFlowStatus.completed;
   }
+
+  @override
+  Object? pull(VisualScriptContext context, int nodeId, String pinId) =>
+      evaluateOutput(context, nodeId, pinId);
 
   @override
   VisualScriptFlowStatus runGraph(
@@ -642,9 +662,10 @@ class VisualScriptInterpreter implements VisualScriptFlow {
   /// real stack, and the budget is deliberately larger than that is safe.
   VisualScriptFlowStatus _run(
     VisualScriptContext context,
-    VisualScriptNodeSpec start,
-  ) {
-    final pending = <VisualScriptNodeSpec>[start];
+    VisualScriptNodeSpec start, {
+    String enteredPin = 'exec',
+  }) {
+    final pending = <(VisualScriptNodeSpec, String)>[(start, enteredPin)];
     while (pending.isNotEmpty) {
       if (++context.steps > VisualScriptContext.maxSteps) {
         context.error =
@@ -653,12 +674,13 @@ class VisualScriptInterpreter implements VisualScriptFlow {
             'node counting further than a frame can afford.';
         return VisualScriptFlowStatus.failed;
       }
-      final node = pending.removeLast();
+      final (node, entered) = pending.removeLast();
       final type = registry[node.type];
       if (type == null) {
         context.error = 'Unknown node type "${node.type}".';
         return VisualScriptFlowStatus.failed;
       }
+      context.enteredPin = entered;
       final inputs = _resolveInputs(context, node, type);
       // Published before the branches run, so a node downstream reading this
       // one's outputs — a loop's Index, an event's Delta — sees them.
@@ -681,7 +703,7 @@ class VisualScriptInterpreter implements VisualScriptFlow {
         // them all keeps a hand-edited document from silently dropping one.
         for (final link in context.graph.outputsFrom(node.id, result.next[i])) {
           final target = context.graph.node(link.toNode);
-          if (target != null) pending.add(target);
+          if (target != null) pending.add((target, link.toPin));
         }
       }
     }

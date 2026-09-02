@@ -11,6 +11,7 @@ import 'dart:math' as math;
 
 import 'package:vector_math/vector_math.dart';
 
+import 'visual_script_control.dart';
 import 'visual_script_graph.dart';
 import 'visual_script_runtime.dart';
 
@@ -176,11 +177,38 @@ final VisualScriptNodeType sequence = VisualScriptNodeType(
       isInput: false,
     ),
   ],
-  // Naming all three is the whole node: the interpreter runs them in the
+  pinsFor: (node, graphs) => [
+    _execIn,
+    for (var i = 0; i < sequenceCountOf(node); i++)
+      VisualScriptPin(
+        id: sequencePin(i),
+        label: 'Then ${i + 1}',
+        type: VisualScriptType.exec,
+        isInput: false,
+      ),
+  ],
+  // Naming them all is the whole node: the interpreter runs them in the
   // order given, each finishing before the next begins.
-  evaluate: (context, node, inputs) =>
-      (outputs: const <String, Object?>{}, next: const <String>['a', 'b', 'c']),
+  evaluate: (context, node, inputs) => (
+    outputs: const <String, Object?>{},
+    next: [for (var i = 0; i < sequenceCountOf(node); i++) sequencePin(i)],
+  ),
 );
+
+/// How many outputs a Sequence node has.
+///
+/// Three when nothing says otherwise, which is what every Sequence saved
+/// before the count existed has — and with [sequencePin] naming them `a`,
+/// `b`, `c`, such a node keeps the wires it already had.
+/// {@category Visual scripting}
+int sequenceCountOf(VisualScriptNodeSpec node) =>
+    node.literals.containsKey('count')
+    ? scriptInteger(node.literals['count'], 3).clamp(1, 26)
+    : 3;
+
+/// The pin id for a Sequence's output [index]: `a`, `b`, `c`…
+/// {@category Visual scripting}
+String sequencePin(int index) => String.fromCharCode(97 + index);
 
 final VisualScriptNodeType doOnce = VisualScriptNodeType(
   id: 'flow.doOnce',
@@ -844,6 +872,7 @@ final List<VisualScriptNodeType> standardVisualScriptNodes = [
   doOnce,
   delay,
   gate,
+  ...controlVisualScriptNodes,
   getVariable,
   setVariable,
   addNumbers,
