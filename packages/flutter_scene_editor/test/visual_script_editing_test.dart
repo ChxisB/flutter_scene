@@ -10,7 +10,7 @@ import 'package:flutter_scene_editor/src/panels/visual_script_inspector.dart';
 import 'package:flutter_scene_editor/src/panels/visual_script_layout.dart';
 import 'package:flutter_scene_editor/src/panels/visual_script_palette.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:vector_math/vector_math.dart' show Vector3;
+import 'package:vector_math/vector_math.dart' show Vector2, Vector3;
 
 final VisualScriptRegistry registry = sceneVisualScriptRegistry();
 
@@ -250,6 +250,263 @@ void main() {
 
     test('no match anywhere is no match', () {
       expect(rank('debug.print', 'quaternion'), isNull);
+    });
+  });
+
+  group('what a wire is allowed to connect to', () {
+    /// A layout over a graph built by [build].
+    VisualScriptLayout layoutFor(void Function(VisualScriptGraph) build) {
+      final graph = VisualScriptGraph();
+      build(graph);
+      return VisualScriptLayout(graph, registry);
+    }
+
+    VisualScriptPortRef out(int node, String pin) =>
+        (node: node, pin: pin, isInput: false);
+    VisualScriptPortRef inp(int node, String pin) =>
+        (node: node, pin: pin, isInput: true);
+
+    test('a value fits a pin of its own type', () {
+      late VisualScriptNodeSpec a;
+      late VisualScriptNodeSpec b;
+      final layout = layoutFor((g) {
+        a = g.add('math.random');
+        b = g.add('math.add');
+      });
+      expect(
+        layout.refuseWire(
+          out(a.id, 'value'),
+          VisualScriptType.number,
+          inp(b.id, 'a'),
+          VisualScriptType.number,
+        ),
+        isNull,
+      );
+    });
+
+    test('a control wire is refused by a value pin, and says so', () {
+      late VisualScriptNodeSpec a;
+      late VisualScriptNodeSpec b;
+      final layout = layoutFor((g) {
+        a = g.add('event.start');
+        b = g.add('math.add');
+      });
+      expect(
+        layout.refuseWire(
+          out(a.id, 'then'),
+          VisualScriptType.exec,
+          inp(b.id, 'a'),
+          VisualScriptType.number,
+        ),
+        contains('control wire'),
+      );
+    });
+
+    test('a mismatch names both types', () {
+      late VisualScriptNodeSpec a;
+      late VisualScriptNodeSpec b;
+      final layout = layoutFor((g) {
+        a = g.add('math.random');
+        b = g.add('flow.branch');
+      });
+      final reason = layout.refuseWire(
+        out(a.id, 'value'),
+        VisualScriptType.number,
+        inp(b.id, 'condition'),
+        VisualScriptType.boolean,
+      );
+      expect(reason, contains('Number'));
+      expect(reason, contains('Boolean'));
+    });
+
+    test('a widening that only works one way says which way', () {
+      late VisualScriptNodeSpec a;
+      late VisualScriptNodeSpec b;
+      final layout = layoutFor((g) {
+        a = g.add('math.random');
+        b = g.add('flow.forLoop');
+      });
+      // Number into Integer is refused, but Integer into Number is fine, and
+      // saying so is the difference between a rule and a wall.
+      expect(
+        layout.refuseWire(
+          out(a.id, 'value'),
+          VisualScriptType.number,
+          inp(b.id, 'first'),
+          VisualScriptType.integer,
+        ),
+        contains('other way round'),
+      );
+    });
+
+    test('two inputs, or two outputs, is not a wire', () {
+      late VisualScriptNodeSpec a;
+      late VisualScriptNodeSpec b;
+      final layout = layoutFor((g) {
+        a = g.add('math.add');
+        b = g.add('math.add');
+      });
+      expect(
+        layout.refuseWire(
+          inp(a.id, 'a'),
+          VisualScriptType.number,
+          inp(b.id, 'a'),
+          VisualScriptType.number,
+        ),
+        contains('Both of those are inputs'),
+      );
+    });
+
+    test('a node cannot wire into itself', () {
+      late VisualScriptNodeSpec a;
+      final layout = layoutFor((g) => a = g.add('math.add'));
+      expect(
+        layout.refuseWire(
+          out(a.id, 'value'),
+          VisualScriptType.number,
+          inp(a.id, 'a'),
+          VisualScriptType.number,
+        ),
+        contains('itself'),
+      );
+    });
+
+    test('a data wire that would close a loop is refused', () {
+      late VisualScriptNodeSpec a;
+      late VisualScriptNodeSpec b;
+      final layout = layoutFor((g) {
+        a = g.add('math.add');
+        b = g.add('math.add');
+        g.connect(
+          VisualScriptLink(
+            fromNode: a.id,
+            fromPin: 'value',
+            toNode: b.id,
+            toPin: 'a',
+          ),
+        );
+      });
+      // A already feeds B, so B feeding A is a value defined by itself.
+      expect(
+        layout.refuseWire(
+          out(b.id, 'value'),
+          VisualScriptType.number,
+          inp(a.id, 'a'),
+          VisualScriptType.number,
+        ),
+        contains('loop'),
+      );
+    });
+
+    test('but a diamond is not a loop', () {
+      late VisualScriptNodeSpec a;
+      late VisualScriptNodeSpec b;
+      final layout = layoutFor((g) {
+        a = g.add('math.random');
+        b = g.add('math.add');
+        g.connect(
+          VisualScriptLink(
+            fromNode: a.id,
+            fromPin: 'value',
+            toNode: b.id,
+            toPin: 'a',
+          ),
+        );
+      });
+      expect(
+        layout.refuseWire(
+          out(a.id, 'value'),
+          VisualScriptType.number,
+          inp(b.id, 'b'),
+          VisualScriptType.number,
+        ),
+        isNull,
+        reason: 'one source feeding two inputs is ordinary',
+      );
+    });
+
+    test('a loop in the control wires is allowed, because that is a loop', () {
+      late VisualScriptNodeSpec branch;
+      late VisualScriptNodeSpec steps;
+      final layout = layoutFor((g) {
+        branch = g.add('flow.branch');
+        steps = g.add('flow.sequence');
+        g.connect(
+          VisualScriptLink(
+            fromNode: branch.id,
+            fromPin: 'true',
+            toNode: steps.id,
+            toPin: 'exec',
+          ),
+        );
+      });
+      expect(
+        layout.refuseWire(
+          out(steps.id, 'a'),
+          VisualScriptType.exec,
+          inp(branch.id, 'exec'),
+          VisualScriptType.exec,
+        ),
+        isNull,
+      );
+    });
+
+    test('dropping near a pin lands on it', () {
+      late VisualScriptNodeSpec a;
+      late VisualScriptNodeSpec b;
+      final layout = layoutFor((g) {
+        a = g.add('math.random', position: Vector2(0, 0));
+        b = g.add('math.add', position: Vector2(300, 0));
+      });
+      final target = layout.portCentre(b.id, 'a')!;
+      final landed = layout.nearestAcceptingPort(
+        target + const Offset(11, 6),
+        out(a.id, 'value'),
+      );
+      expect(landed?.node, b.id);
+      expect(landed?.pin, 'a');
+    });
+
+    test('and does not land on a pin it could not connect to', () {
+      late VisualScriptNodeSpec a;
+      late VisualScriptNodeSpec b;
+      final layout = layoutFor((g) {
+        a = g.add('event.start', position: Vector2(0, 0));
+        b = g.add('math.add', position: Vector2(300, 0));
+      });
+      // An exec wire let go right on a number pin snaps to nothing, rather
+      // than to whichever pin happens to be nearest.
+      expect(
+        layout.nearestAcceptingPort(
+          layout.portCentre(b.id, 'a')!,
+          out(a.id, 'then'),
+        ),
+        isNull,
+      );
+    });
+
+    test('a node with nothing compatible does not accept the wire', () {
+      late VisualScriptNodeSpec a;
+      late VisualScriptNodeSpec b;
+      final layout = layoutFor((g) {
+        a = g.add('event.start');
+        b = g.add('vector.make');
+      });
+      expect(
+        layout.acceptsWire(b, out(a.id, 'then')),
+        isFalse,
+        reason: 'Make Vector has no control pin at all',
+      );
+    });
+
+    test('a node with one compatible pin does accept it', () {
+      late VisualScriptNodeSpec a;
+      late VisualScriptNodeSpec b;
+      final layout = layoutFor((g) {
+        a = g.add('event.start');
+        b = g.add('debug.print');
+      });
+      expect(layout.acceptsWire(b, out(a.id, 'then')), isTrue);
     });
   });
 

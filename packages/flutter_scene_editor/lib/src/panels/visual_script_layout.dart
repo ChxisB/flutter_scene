@@ -17,6 +17,18 @@ import '../shell/editor_theme.dart';
 /// A pin on a node, as the canvas refers to it.
 typedef VisualScriptPortRef = ({int node, String pin, bool isInput});
 
+/// Whether something on the canvas could take the wire being dragged.
+enum _Reach {
+  /// Nothing is being dragged, so everything draws normally.
+  idle,
+
+  /// The wire could land here.
+  yes,
+
+  /// It could not.
+  no,
+}
+
 /// Node body metrics, in canvas units.
 const double visualScriptNodeWidth = 168;
 const double visualScriptHeaderHeight = 22;
@@ -137,6 +149,137 @@ class VisualScriptLayout {
       if (boundsOf(node).contains(at)) return node.id;
     }
     return null;
+  }
+
+  /// Why a wire from [from] cannot land on [to], or null when it can.
+  ///
+  /// The message is the point. A drop that silently does nothing teaches
+  /// nobody anything, and "you cannot put a Number into a Boolean" is a
+  /// sentence someone can act on.
+  String? refuseWire(
+    VisualScriptPortRef from,
+    VisualScriptType fromType,
+    VisualScriptPortRef to,
+    VisualScriptType toType,
+  ) {
+    if (from.node == to.node) return 'A node cannot wire into itself.';
+    if (from.isInput == to.isInput) {
+      return from.isInput
+          ? 'Both of those are inputs. A wire runs from an output to an input.'
+          : 'Both of those are outputs. A wire runs from an output to an '
+                'input.';
+    }
+    final output = from.isInput ? to : from;
+    final input = from.isInput ? from : to;
+    final outType = from.isInput ? toType : fromType;
+    final inType = from.isInput ? fromType : toType;
+
+    final isExec = outType == VisualScriptType.exec;
+    if (isExec != (inType == VisualScriptType.exec)) {
+      return isExec
+          ? 'That is a control wire, and it can only go to another control '
+                'pin.'
+          : 'A control pin only takes a control wire.';
+    }
+    if (!outType.connectsTo(inType)) {
+      // Say which way round it failed, since the reverse is often allowed:
+      // an Integer flows into a Number and a Number does not flow back.
+      return inType.connectsTo(outType)
+          ? 'A ${outType.label} does not fit a ${inType.label} pin — though '
+                'it would fit the other way round.'
+          : 'A ${outType.label} does not fit a ${inType.label} pin.';
+    }
+    if (!isExec && feedsInto(input.node, output.node)) {
+      return 'That would make a loop: ${_nameOf(input.node)} already feeds '
+          '${_nameOf(output.node)}.';
+    }
+    return null;
+  }
+
+  /// Whether [source] already reaches [target] through data wires.
+  ///
+  /// Only data wires: a loop in the exec wires is a loop, which is a thing
+  /// graphs are allowed to have. A loop in the data wires is a value defined
+  /// in terms of itself, which the runtime can only report as an error after
+  /// the fact — so it is worth refusing while the wire is still in the hand.
+  bool feedsInto(int source, int target) {
+    if (source == target) return true;
+    final seen = <int>{source};
+    final pending = <int>[source];
+    while (pending.isNotEmpty) {
+      final current = pending.removeLast();
+      for (final link in graph.links) {
+        if (link.fromNode != current) continue;
+        if (_isExecLink(link)) continue;
+        if (link.toNode == target) return true;
+        if (seen.add(link.toNode)) pending.add(link.toNode);
+      }
+    }
+    return false;
+  }
+
+  bool _isExecLink(VisualScriptLink link) {
+    final node = graph.node(link.fromNode);
+    if (node == null) return false;
+    return registry[node.type]?.pinOf(node, link.fromPin, graphs)?.type ==
+        VisualScriptType.exec;
+  }
+
+  String _nameOf(int nodeId) {
+    final node = graph.node(nodeId);
+    if (node == null) return 'that node';
+    return registry[node.type]?.label ?? node.type;
+  }
+
+  /// The type of the pin [port] names, or null when there is no such pin.
+  VisualScriptType? typeOf(VisualScriptPortRef port) {
+    final node = graph.node(port.node);
+    if (node == null) return null;
+    return registry[node.type]?.pinOf(node, port.pin, graphs)?.type;
+  }
+
+  /// The pin nearest [at] that a wire from [from] could actually land on.
+  ///
+  /// Searched within [radius] rather than the grab radius, so letting go
+  /// *near* the right pin lands on it. A pin that would be refused is not a
+  /// candidate at all, which is what stops a drop snapping to a neighbour it
+  /// cannot connect to.
+  VisualScriptPortRef? nearestAcceptingPort(
+    Offset at,
+    VisualScriptPortRef from, {
+    double radius = 28,
+  }) {
+    final fromType = typeOf(from);
+    if (fromType == null) return null;
+    VisualScriptPortRef? best;
+    var bestDistance = double.infinity;
+    for (final node in graph.nodes) {
+      if (node.id == from.node) continue;
+      for (final pin in pinsOf(node)) {
+        if (pin.isInput == from.isInput) continue;
+        final centre = portCentre(node.id, pin.id);
+        if (centre == null) continue;
+        final distance = (centre - at).distance;
+        if (distance > radius || distance >= bestDistance) continue;
+        final candidate = (node: node.id, pin: pin.id, isInput: pin.isInput);
+        if (refuseWire(from, fromType, candidate, pin.type) != null) continue;
+        best = candidate;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
+  /// Whether [node] has any pin a wire from [from] could land on.
+  bool acceptsWire(VisualScriptNodeSpec node, VisualScriptPortRef from) {
+    final fromType = typeOf(from);
+    if (fromType == null) return false;
+    for (final pin in pinsOf(node)) {
+      if (pin.isInput == from.isInput) continue;
+      final candidate = (node: node.id, pin: pin.id, isInput: pin.isInput);
+      if (refuseWire(from, fromType, candidate, pin.type) == null) return true;
+    }
+    return false;
   }
 }
 
@@ -342,14 +485,20 @@ class VisualScriptCanvasPainter extends CustomPainter {
     final type = registry[node.type];
     final bounds = layout.boundsOf(node);
     final isSelected = node.id == selected;
+    // While a wire is in hand, a node that cannot take it steps back. The
+    // ones left at full strength are the answer to "where can this go".
+    final reachable = _canReach(node);
 
     final body = RRect.fromRectAndRadius(bounds, const Radius.circular(5));
     canvas
-      ..drawRRect(body, Paint()..color = editorPanelColor)
+      ..drawRRect(body, Paint()..color = _fade(editorPanelColor, reachable))
       ..drawRRect(
         body,
         Paint()
-          ..color = isSelected ? editorAccentColor : editorLineColor
+          ..color = _fade(
+            isSelected ? editorAccentColor : editorLineColor,
+            reachable,
+          )
           ..style = PaintingStyle.stroke
           ..strokeWidth = isSelected ? 1.8 : 1,
       );
@@ -368,9 +517,12 @@ class VisualScriptCanvasPainter extends CustomPainter {
       ..drawRect(
         headerRect,
         Paint()
-          ..color = (type?.isEvent ?? false)
-              ? const Color(0xFF7A3A46)
-              : editorRaisedColor,
+          ..color = _fade(
+            (type?.isEvent ?? false)
+                ? const Color(0xFF7A3A46)
+                : editorRaisedColor,
+            reachable,
+          ),
       )
       ..restore();
 
@@ -378,7 +530,7 @@ class VisualScriptCanvasPainter extends CustomPainter {
       canvas,
       type?.label ?? node.type,
       Offset(bounds.left + 8, bounds.top + 5),
-      editorBodyText.copyWith(color: editorTextColor),
+      editorBodyText.copyWith(color: _fade(editorTextColor, reachable)),
     );
 
     if (type == null) {
@@ -410,7 +562,18 @@ class VisualScriptCanvasPainter extends CustomPainter {
   }) {
     final centre = layout.portCentre(node.id, pin.id);
     if (centre == null) return;
-    final color = visualScriptTypeColor(pin.type);
+    final accepts = _accepts(node, pin);
+    final color = _fade(visualScriptTypeColor(pin.type), accepts);
+
+    // A halo behind the pins that would take the wire, so the eye lands on
+    // them rather than reading every label.
+    if (accepts == _Reach.yes) {
+      canvas.drawCircle(
+        centre,
+        visualScriptPortRadius + 4.5,
+        Paint()..color = editorAccentColor.withValues(alpha: 0.35),
+      );
+    }
 
     if (pin.type == VisualScriptType.exec) {
       // Exec pins are triangles, so the spine of a graph is distinguishable
@@ -435,7 +598,9 @@ class VisualScriptCanvasPainter extends CustomPainter {
     }
 
     if (pin.label.isEmpty) return;
-    final style = editorMicroText.copyWith(color: editorMutedTextColor);
+    final style = editorMicroText.copyWith(
+      color: _fade(editorMutedTextColor, accepts),
+    );
     final painter = TextPainter(
       text: TextSpan(text: pin.label, style: style),
       textDirection: TextDirection.ltr,
@@ -448,6 +613,36 @@ class VisualScriptCanvasPainter extends CustomPainter {
       ),
     );
   }
+
+  /// How a node or pin relates to the wire currently in hand.
+  _Reach _canReach(VisualScriptNodeSpec node) {
+    final dragging = wireFrom;
+    if (dragging == null) return _Reach.idle;
+    if (dragging.node == node.id) return _Reach.idle;
+    return layout.acceptsWire(node, dragging) ? _Reach.yes : _Reach.no;
+  }
+
+  _Reach _accepts(VisualScriptNodeSpec node, VisualScriptPin pin) {
+    final dragging = wireFrom;
+    if (dragging == null) return _Reach.idle;
+    // The pin the wire is coming from stays lit: it is the one end that is
+    // definitely part of this connection.
+    if (dragging.node == node.id) {
+      return dragging.pin == pin.id ? _Reach.yes : _Reach.idle;
+    }
+    if (pin.isInput == dragging.isInput) return _Reach.no;
+    final fromType = layout.typeOf(dragging);
+    if (fromType == null) return _Reach.no;
+    final candidate = (node: node.id, pin: pin.id, isInput: pin.isInput);
+    return layout.refuseWire(dragging, fromType, candidate, pin.type) == null
+        ? _Reach.yes
+        : _Reach.no;
+  }
+
+  /// [color] as it should be drawn given [reach]: untouched unless a wire is
+  /// in hand and this is somewhere it cannot go.
+  Color _fade(Color color, _Reach reach) =>
+      reach == _Reach.no ? color.withValues(alpha: color.a * 0.25) : color;
 
   void _text(Canvas canvas, String text, Offset at, TextStyle style) {
     TextPainter(

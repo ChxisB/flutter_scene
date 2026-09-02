@@ -113,6 +113,10 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
 
   bool _paletteOpen = false;
 
+  /// Why the last wire was refused, shown until it is stale or replaced.
+  String? _refusal;
+  Timer? _refusalTimer;
+
   /// Where the palette should appear, in this panel's coordinates, or null to
   /// put it in its usual corner.
   Offset? _paletteAt;
@@ -138,6 +142,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
 
   @override
   void dispose() {
+    _refusalTimer?.cancel();
     _ctrl.selection.removeListener(_onSelectionChanged);
     _ctrl.history.removeListener(_onSelectionChanged);
     _ctrl.removeListener(_onSelectionChanged);
@@ -333,6 +338,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
         return;
       }
       setState(() {
+        _refusal = null;
         _wireFrom = port;
         _wirePointer = at;
       });
@@ -377,13 +383,41 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     final from = _wireFrom;
     if (from != null) {
       final at = _toCanvas(event.localPosition);
-      final target = _layout(graph).portAt(at);
+      final layout = _layout(graph);
+      // The nearest pin that would actually take this wire, rather than
+      // whatever happens to be under the pointer. Letting go near the right
+      // pin lands on it, and letting go on a pin that would be refused does
+      // not quietly snap to a neighbour instead.
+      final target = layout.nearestAcceptingPort(at, from);
       final detached = _wireDetached;
       setState(() {
         _wireFrom = null;
         _wirePointer = null;
         _wireDetached = false;
       });
+      if (target == null) {
+        // Nothing took it. If the pointer is over a node, say why rather than
+        // doing nothing: a refusal that looks like a missed click teaches the
+        // wrong lesson.
+        final under = layout.portAt(at);
+        final fromType = layout.typeOf(from);
+        if (under != null && fromType != null) {
+          final underType = layout.typeOf(under);
+          if (underType != null) {
+            _refuse(
+              layout.refuseWire(from, fromType, under, underType) ??
+                  'That wire cannot go there.',
+            );
+            if (detached) await _commit();
+            return;
+          }
+        }
+        if (layout.nodeAt(at) != null) {
+          _refuse('Nothing on that node takes a ${fromType?.label ?? 'wire'}.');
+          if (detached) await _commit();
+          return;
+        }
+      }
       if (target == null) {
         // Dropped on empty canvas. Offer what could go there, filtered to
         // what this pin can actually reach.
@@ -400,22 +434,20 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
         if (detached) await _commit();
         return;
       }
-      if (_canConnect(graph, from, target)) {
-        final output = from.isInput ? target : from;
-        final input = from.isInput ? from : target;
-        graph.connect(
-          VisualScriptLink(
-            fromNode: output.node,
-            fromPin: output.pin,
-            toNode: input.node,
-            toPin: input.pin,
-          ),
-          // Only exec outputs are singular; a value feeds as many inputs as
-          // want it.
-          execOutputIsSingular: _typeOf(graph, output) == VisualScriptType.exec,
-        );
-        await _commit();
-      }
+      final output = from.isInput ? target : from;
+      final input = from.isInput ? from : target;
+      graph.connect(
+        VisualScriptLink(
+          fromNode: output.node,
+          fromPin: output.pin,
+          toNode: input.node,
+          toPin: input.pin,
+        ),
+        // Only exec outputs are singular; a value feeds as many inputs as
+        // want it.
+        execOutputIsSingular: layout.typeOf(output) == VisualScriptType.exec,
+      );
+      await _commit();
       return;
     }
     if (_dragging != null) {
@@ -448,26 +480,18 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     _wireIntoType = null;
   }
 
-  VisualScriptType? _typeOf(VisualScriptGraph graph, VisualScriptPortRef port) {
-    final spec = graph.node(port.node);
-    if (spec == null) return null;
-    return _registry[spec.type]?.pinOf(spec, port.pin, _blueprint?.graph)?.type;
-  }
-
-  /// Whether a wire from one port to the other is legal.
-  bool _canConnect(
+  VisualScriptType? _typeOf(
     VisualScriptGraph graph,
-    VisualScriptPortRef a,
-    VisualScriptPortRef b,
-  ) {
-    if (a.node == b.node) return false;
-    if (a.isInput == b.isInput) return false;
-    final output = a.isInput ? b : a;
-    final input = a.isInput ? a : b;
-    final from = _typeOf(graph, output);
-    final to = _typeOf(graph, input);
-    if (from == null || to == null) return false;
-    return from.connectsTo(to);
+    VisualScriptPortRef port,
+  ) => _layout(graph).typeOf(port);
+
+  /// Says why a wire was refused, for a few seconds.
+  void _refuse(String reason) {
+    _refusalTimer?.cancel();
+    setState(() => _refusal = reason);
+    _refusalTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted) setState(() => _refusal = null);
+    });
   }
 
   /// Writes a value into the selected node and commits it.
@@ -702,6 +726,17 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
                       child: Stack(
                         children: [
                           _buildCanvas(graph),
+                          if (_refusal case final reason?)
+                            Positioned(
+                              left: 10,
+                              right: 10,
+                              bottom: 10,
+                              child: _WireRefusal(
+                                reason: reason,
+                                onDismiss: () =>
+                                    setState(() => _refusal = null),
+                              ),
+                            ),
                           if (_paletteOpen)
                             VisualScriptPalette(
                               registry: _registry,
@@ -854,6 +889,48 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
 
 /// A node's visual script component, and which node it is on.
 typedef ComponentSpecView = ({LocalId nodeId, ComponentSpec spec});
+
+/// Why a wire would not connect, sitting under the canvas until it is stale.
+///
+/// A refusal that looks like a missed click is worse than no refusal at all:
+/// the second time, somebody concludes the editor is unreliable rather than
+/// that the wire was wrong.
+class _WireRefusal extends StatelessWidget {
+  const _WireRefusal({required this.reason, required this.onDismiss});
+
+  final String reason;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) => Align(
+    alignment: Alignment.bottomCenter,
+    child: Container(
+      padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+      decoration: BoxDecoration(
+        color: editorRaisedColor,
+        borderRadius: BorderRadius.circular(editorControlRadius),
+        border: Border.all(color: editorWarningColor.withValues(alpha: 0.6)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.info_outline, size: 13, color: editorWarningColor),
+          const SizedBox(width: 6),
+          Flexible(child: Text(reason, style: editorDetailText)),
+          const SizedBox(width: 4),
+          InkWell(
+            onTap: onDismiss,
+            child: const Icon(
+              Icons.close,
+              size: 13,
+              color: editorMutedTextColor,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
 
 class _NoGraph extends StatelessWidget {
   const _NoGraph({required this.hasSelection, required this.onAdd});
