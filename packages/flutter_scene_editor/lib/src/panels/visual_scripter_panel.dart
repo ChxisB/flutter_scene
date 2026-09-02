@@ -24,7 +24,9 @@ import '../blueprints/blueprint_file.dart';
 import '../controller/editor_controller.dart';
 import '../shell/editor_theme.dart';
 import 'my_blueprint_panel.dart';
+import 'visual_script_inspector.dart';
 import 'visual_script_layout.dart';
+import 'visual_script_palette.dart';
 
 /// The Visual Scripter panel.
 class VisualScripterPanel extends StatefulWidget {
@@ -102,7 +104,29 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
   VisualScriptPortRef? _wireFrom;
   Offset? _wirePointer;
 
+  /// Set while a drag is pulling an existing wire off an input.
+  ///
+  /// The graph is already mutated by then, so a drag that ends nowhere still
+  /// has to be committed — otherwise the wire vanishes from the canvas and
+  /// comes back the next time the panel reloads.
+  bool _wireDetached = false;
+
   bool _paletteOpen = false;
+
+  /// Where the palette should appear, in this panel's coordinates, or null to
+  /// put it in its usual corner.
+  Offset? _paletteAt;
+
+  /// Where a node picked from the palette should land, in canvas space.
+  Offset? _dropAt;
+
+  /// The pin a palette was opened from, so whatever is picked is wired to it.
+  ///
+  /// This is what makes dragging a wire into empty space useful rather than a
+  /// no-op: the question "what can go here" already has an answer, and the
+  /// palette should be showing it.
+  VisualScriptPortRef? _wireInto;
+  VisualScriptType? _wireIntoType;
 
   @override
   void initState() {
@@ -270,13 +294,25 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
   Offset _toCanvas(Offset screen) => (screen - _pan) / _zoom;
 
   VisualScriptLayout _layout(VisualScriptGraph graph) =>
-      VisualScriptLayout(graph, _registry);
+      VisualScriptLayout(graph, _registry, graphs: _blueprint?.graph);
 
   // --- interaction ---------------------------------------------------------
 
   void _onPointerDown(PointerDownEvent event, VisualScriptGraph graph) {
     final at = _toCanvas(event.localPosition);
     final layout = _layout(graph);
+
+    // Right-click anywhere is "add something here", the way it is in every
+    // graph editor. On a node it selects instead, so a context menu for the
+    // node has somewhere to grow later.
+    if (event.buttons == kSecondaryButton) {
+      final onNode = layout.nodeAt(at);
+      setState(() {
+        _selected = onNode;
+        if (onNode == null) _openPalette(at: event.localPosition, drop: at);
+      });
+      return;
+    }
 
     final port = layout.portAt(at);
     if (port != null) {
@@ -286,6 +322,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
       if (existing != null) {
         graph.disconnect(existing);
         setState(() {
+          _wireDetached = true;
           _wireFrom = (
             node: existing.fromNode,
             pin: existing.fromPin,
@@ -341,11 +378,29 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     if (from != null) {
       final at = _toCanvas(event.localPosition);
       final target = _layout(graph).portAt(at);
+      final detached = _wireDetached;
       setState(() {
         _wireFrom = null;
         _wirePointer = null;
+        _wireDetached = false;
       });
-      if (target != null && _canConnect(graph, from, target)) {
+      if (target == null) {
+        // Dropped on empty canvas. Offer what could go there, filtered to
+        // what this pin can actually reach.
+        setState(() {
+          _openPalette(
+            at: event.localPosition,
+            drop: at,
+            into: from,
+            intoType: _typeOf(graph, from),
+          );
+        });
+        // A wire pulled off an input and dropped nowhere is a disconnection,
+        // and the graph already has it.
+        if (detached) await _commit();
+        return;
+      }
+      if (_canConnect(graph, from, target)) {
         final output = from.isInput ? target : from;
         final input = from.isInput ? from : target;
         graph.connect(
@@ -369,10 +424,34 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     }
   }
 
+  /// Opens the palette, optionally filtered to what [into] can connect to.
+  ///
+  /// Call inside a setState: it only assigns.
+  void _openPalette({
+    Offset? at,
+    Offset? drop,
+    VisualScriptPortRef? into,
+    VisualScriptType? intoType,
+  }) {
+    _paletteOpen = true;
+    _paletteAt = at;
+    _dropAt = drop;
+    _wireInto = into;
+    _wireIntoType = intoType;
+  }
+
+  void _closePalette() {
+    _paletteOpen = false;
+    _paletteAt = null;
+    _dropAt = null;
+    _wireInto = null;
+    _wireIntoType = null;
+  }
+
   VisualScriptType? _typeOf(VisualScriptGraph graph, VisualScriptPortRef port) {
     final spec = graph.node(port.node);
     if (spec == null) return null;
-    return _registry[spec.type]?.pin(port.pin)?.type;
+    return _registry[spec.type]?.pinOf(spec, port.pin, _blueprint?.graph)?.type;
   }
 
   /// Whether a wire from one port to the other is legal.
@@ -391,6 +470,29 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     return from.connectsTo(to);
   }
 
+  /// Writes a value into the selected node and commits it.
+  ///
+  /// A null clears the key rather than storing null, so the pin goes back to
+  /// its own default — which is a different thing from being set to nothing.
+  Future<void> _setLiteral(
+    VisualScriptGraph graph,
+    String key,
+    Object? value,
+  ) async {
+    final selected = _selected;
+    if (selected == null) return;
+    final node = graph.node(selected);
+    if (node == null) return;
+    setState(() {
+      if (value == null) {
+        node.literals.remove(key);
+      } else {
+        node.literals[key] = value;
+      }
+    });
+    await _commit();
+  }
+
   Future<void> _deleteSelected(VisualScriptGraph graph) async {
     final selected = _selected;
     if (selected == null) return;
@@ -403,17 +505,75 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     VisualScriptNodeType type,
     VisualScriptGraph graph,
   ) async {
-    // Drop it in the middle of what is on screen, so it lands where the eye
-    // is rather than at the origin.
-    final centre = _toCanvas(
-      Offset(context.size?.width ?? 400, context.size?.height ?? 300) / 2,
+    // Where the palette was opened from, if it was opened from somewhere.
+    // Otherwise the middle of what is on screen, so it lands where the eye is
+    // rather than at the origin.
+    final where =
+        _dropAt ??
+        _toCanvas(
+          Offset(context.size?.width ?? 400, context.size?.height ?? 300) / 2,
+        );
+    // A node dragged out of a pin reads better placed just past the pointer
+    // than centred on it, since the wire lands on its left edge.
+    final from = _wireInto;
+    final position = from == null || from.isInput
+        ? where
+        : where - const Offset(0, visualScriptHeaderHeight / 2);
+    final node = graph.add(
+      type.id,
+      position: Vector2(position.dx, position.dy),
     );
-    final node = graph.add(type.id, position: Vector2(centre.dx, centre.dy));
+
+    if (from != null) {
+      final fromType = _wireIntoType;
+      final pin = fromType == null
+          ? null
+          : visualScriptConnectablePin(
+              type,
+              fromType,
+              fromIsInput: from.isInput,
+              graphs: _blueprint?.graph,
+            );
+      if (pin != null) {
+        graph.connect(
+          from.isInput
+              ? VisualScriptLink(
+                  fromNode: node.id,
+                  fromPin: pin,
+                  toNode: from.node,
+                  toPin: from.pin,
+                )
+              : VisualScriptLink(
+                  fromNode: from.node,
+                  fromPin: from.pin,
+                  toNode: node.id,
+                  toPin: pin,
+                ),
+          execOutputIsSingular: _wireIntoType == VisualScriptType.exec,
+        );
+      }
+    }
+
     setState(() {
       _selected = node.id;
-      _paletteOpen = false;
+      _closePalette();
     });
     await _commit();
+  }
+
+  /// Whether a fresh node of [type] has any pin the dragged wire could reach,
+  /// which is what the palette filters on.
+  bool _typeAccepts(VisualScriptNodeType type) {
+    final fromType = _wireIntoType;
+    final from = _wireInto;
+    if (fromType == null || from == null) return true;
+    return visualScriptConnectablePin(
+          type,
+          fromType,
+          fromIsInput: from.isInput,
+          graphs: _blueprint?.graph,
+        ) !=
+        null;
   }
 
   Future<void> _addGraph(VisualScriptGraphKind kind) async {
@@ -543,13 +703,28 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
                         children: [
                           _buildCanvas(graph),
                           if (_paletteOpen)
-                            _Palette(
+                            VisualScriptPalette(
                               registry: _registry,
+                              anchor: _paletteAt,
+                              accepts: _wireInto == null ? null : _typeAccepts,
+                              fromType: _wireIntoType,
+                              fromIsInput: _wireInto?.isInput ?? false,
                               onPick: (type) => _addNode(type, graph),
-                              onDismiss: () =>
-                                  setState(() => _paletteOpen = false),
+                              onDismiss: () => setState(_closePalette),
                             ),
                         ],
+                      ),
+                    ),
+                    Container(width: 1, color: editorLineColor),
+                    SizedBox(
+                      width: 232,
+                      child: VisualScriptInspector(
+                        graph: graph,
+                        registry: _registry,
+                        node: _selected == null ? null : graph.node(_selected!),
+                        graphs: blueprint.graph,
+                        onChanged: (key, value) =>
+                            unawaited(_setLiteral(graph, key, value)),
                       ),
                     ),
                   ],
@@ -616,7 +791,15 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
           ),
           const SizedBox(width: 6),
           FilledButton.icon(
-            onPressed: () => setState(() => _paletteOpen = !_paletteOpen),
+            onPressed: () => setState(() {
+              // Always the unfiltered list from here, wherever the palette
+              // was last opened from.
+              if (_paletteOpen) {
+                _closePalette();
+              } else {
+                _openPalette();
+              }
+            }),
             icon: const Icon(Icons.add, size: 15),
             label: const Text('Add node'),
           ),
@@ -661,6 +844,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
             wireFrom: _wireFrom,
             wirePointer: _wirePointer,
             trace: _tracing ? _liveComponent?.trace : null,
+            graphs: _blueprint?.graph,
           ),
         ),
       ),
@@ -711,127 +895,6 @@ class _NoGraph extends StatelessWidget {
               label: const Text('Add a visual script'),
             ),
           ],
-        ],
-      ),
-    ),
-  );
-}
-
-/// The node palette, grouped by category.
-class _Palette extends StatefulWidget {
-  const _Palette({
-    required this.registry,
-    required this.onPick,
-    required this.onDismiss,
-  });
-
-  final VisualScriptRegistry registry;
-  final ValueChanged<VisualScriptNodeType> onPick;
-  final VoidCallback onDismiss;
-
-  @override
-  State<_Palette> createState() => _PaletteState();
-}
-
-class _PaletteState extends State<_Palette> {
-  String _query = '';
-
-  @override
-  Widget build(BuildContext context) {
-    final needle = _query.trim().toLowerCase();
-    final matches = [
-      for (final type in widget.registry.all)
-        if (needle.isEmpty ||
-            type.label.toLowerCase().contains(needle) ||
-            type.id.toLowerCase().contains(needle) ||
-            type.doc.toLowerCase().contains(needle))
-          type,
-    ];
-    return Positioned.fill(
-      child: GestureDetector(
-        onTap: widget.onDismiss,
-        child: ColoredBox(
-          color: editorSurfaceColor.withValues(alpha: 0.55),
-          child: Align(
-            alignment: Alignment.topRight,
-            child: GestureDetector(
-              onTap: () {},
-              child: Container(
-                width: 300,
-                margin: const EdgeInsets.all(10),
-                decoration: editorPanelBox(),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(8),
-                      child: SizedBox(
-                        height: 26,
-                        child: TextField(
-                          autofocus: true,
-                          style: editorBodyText,
-                          decoration: const InputDecoration(
-                            isDense: true,
-                            hintText: 'Search nodes',
-                            border: OutlineInputBorder(),
-                            contentPadding: EdgeInsets.symmetric(horizontal: 8),
-                          ),
-                          onChanged: (value) => setState(() => _query = value),
-                        ),
-                      ),
-                    ),
-                    Flexible(
-                      child: ListView(
-                        shrinkWrap: true,
-                        padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-                        children: [
-                          for (final category
-                              in widget.registry.categories) ...[
-                            if (matches.any((t) => t.category == category)) ...[
-                              EditorSectionHeader(label: category),
-                              for (final type in matches)
-                                if (type.category == category)
-                                  _PaletteRow(
-                                    type: type,
-                                    onTap: () => widget.onPick(type),
-                                  ),
-                            ],
-                          ],
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _PaletteRow extends StatelessWidget {
-  const _PaletteRow({required this.type, required this.onTap});
-
-  final VisualScriptNodeType type;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) => InkWell(
-    onTap: onTap,
-    child: Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(type.label, style: editorBodyText),
-          Text(
-            type.doc,
-            style: editorMicroText,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
         ],
       ),
     ),

@@ -35,29 +35,51 @@ Color visualScriptTypeColor(VisualScriptType type) => switch (type) {
   VisualScriptType.number => const Color(0xFF6FC96F),
   VisualScriptType.integer => const Color(0xFF4EC9B0),
   VisualScriptType.string => const Color(0xFFD98FD9),
+  VisualScriptType.vector2 => const Color(0xFFE0C24E),
   VisualScriptType.vector3 => const Color(0xFFE0A84E),
+  VisualScriptType.vector4 => const Color(0xFFE08A4E),
+  VisualScriptType.quaternion => const Color(0xFF8E7BE0),
+  VisualScriptType.color => const Color(0xFFE05C8A),
+  VisualScriptType.list => const Color(0xFF5FB0A8),
+  VisualScriptType.dictionary => const Color(0xFF4E9E86),
   VisualScriptType.nodeRef => const Color(0xFF4E86DE),
+  VisualScriptType.assetRef => const Color(0xFF7FA8DE),
   VisualScriptType.any => const Color(0xFF9099A2),
 };
 
 /// Where everything in [graph] sits.
 class VisualScriptLayout {
-  VisualScriptLayout(this.graph, this.registry);
+  VisualScriptLayout(this.graph, this.registry, {this.graphs});
 
   final VisualScriptGraph graph;
   final VisualScriptRegistry registry;
 
+  /// How a node that names another graph finds it, for the node types whose
+  /// pins come from one. Null when nothing on this canvas nests.
+  final VisualScriptGraphLookup? graphs;
+
+  /// The pins [node] has — which is a question about the node, not its type:
+  /// a Switch has an output per case and a Sequence as many as it was given.
+  List<VisualScriptPin> pinsOf(VisualScriptNodeSpec node) =>
+      registry[node.type]?.pinsOf(node, graphs) ?? const [];
+
+  Iterable<VisualScriptPin> inputsOf(VisualScriptNodeSpec node) =>
+      pinsOf(node).where((pin) => pin.isInput);
+
+  Iterable<VisualScriptPin> outputsOf(VisualScriptNodeSpec node) =>
+      pinsOf(node).where((pin) => !pin.isInput);
+
   /// How many rows a node's body has: the taller of its input and output
   /// columns, since the two run side by side.
-  int rowsOf(VisualScriptNodeType type) =>
-      math.max(type.inputs.length, type.outputs.length);
+  int rowsOf(VisualScriptNodeSpec node) =>
+      math.max(inputsOf(node).length, outputsOf(node).length);
 
-  double heightOf(VisualScriptNodeType type) =>
-      visualScriptHeaderHeight + rowsOf(type) * visualScriptRowHeight + 6;
+  double heightOf(VisualScriptNodeSpec node) =>
+      visualScriptHeaderHeight + rowsOf(node) * visualScriptRowHeight + 6;
 
   Rect boundsOf(VisualScriptNodeSpec node) {
     final type = registry[node.type];
-    final height = type == null ? visualScriptHeaderHeight + 6 : heightOf(type);
+    final height = type == null ? visualScriptHeaderHeight + 6 : heightOf(node);
     return Rect.fromLTWH(
       node.position.x,
       node.position.y,
@@ -75,9 +97,9 @@ class VisualScriptLayout {
     if (node == null) return null;
     final type = registry[node.type];
     if (type == null) return null;
-    final pin = type.pin(pinId);
+    final pin = type.pinOf(node, pinId, graphs);
     if (pin == null) return null;
-    final column = pin.isInput ? type.inputs : type.outputs;
+    final column = pin.isInput ? inputsOf(node) : outputsOf(node);
     final index = column.toList().indexWhere((p) => p.id == pinId);
     if (index < 0) return null;
     final y =
@@ -97,9 +119,8 @@ class VisualScriptLayout {
   /// drawn over another is the one that gets grabbed.
   VisualScriptPortRef? portAt(Offset at) {
     for (final node in graph.nodes.reversed) {
-      final type = registry[node.type];
-      if (type == null) continue;
-      for (final pin in type.pins) {
+      if (registry[node.type] == null) continue;
+      for (final pin in pinsOf(node)) {
         final centre = portCentre(node.id, pin.id);
         if (centre == null) continue;
         if ((centre - at).distance <= visualScriptGrabRadius) {
@@ -130,7 +151,8 @@ class VisualScriptCanvasPainter extends CustomPainter {
     required this.wireFrom,
     required this.wirePointer,
     this.trace,
-  }) : layout = VisualScriptLayout(graph, registry);
+    this.graphs,
+  }) : layout = VisualScriptLayout(graph, registry, graphs: graphs);
 
   final VisualScriptGraph graph;
   final VisualScriptRegistry registry;
@@ -139,6 +161,9 @@ class VisualScriptCanvasPainter extends CustomPainter {
   final int? selected;
   final VisualScriptPortRef? wireFrom;
   final Offset? wirePointer;
+
+  /// How a nesting node finds the graph it names, passed on to the layout.
+  final VisualScriptGraphLookup? graphs;
 
   /// What the last tick did, or null when nothing is being watched.
   ///
@@ -199,8 +224,9 @@ class VisualScriptCanvasPainter extends CustomPainter {
 
   VisualScriptType _typeColorType(int nodeId, String pinId) {
     final node = graph.node(nodeId);
-    final type = node == null ? null : registry[node.type];
-    return type?.pin(pinId)?.type ?? VisualScriptType.any;
+    if (node == null) return VisualScriptType.any;
+    return registry[node.type]?.pinOf(node, pinId, graphs)?.type ??
+        VisualScriptType.any;
   }
 
   Color _typeColorOf(VisualScriptPortRef port) =>
@@ -366,11 +392,11 @@ class VisualScriptCanvasPainter extends CustomPainter {
     }
 
     var row = 0;
-    for (final pin in type.inputs) {
+    for (final pin in layout.inputsOf(node)) {
       _paintPin(canvas, node, pin, row++, isInput: true);
     }
     row = 0;
-    for (final pin in type.outputs) {
+    for (final pin in layout.outputsOf(node)) {
       _paintPin(canvas, node, pin, row++, isInput: false);
     }
   }
