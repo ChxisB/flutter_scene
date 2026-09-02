@@ -97,15 +97,28 @@ export 'src/visual_script/visual_script_trace.dart'
     show VisualScriptPinRef, VisualScriptTrace, VisualScriptTraceStep;
 export 'src/visual_script/visual_script_runtime.dart'
     show
+        VisualScriptBreak,
         VisualScriptContext,
+        VisualScriptFlow,
+        VisualScriptFlowStatus,
+        VisualScriptFrame,
+        VisualScriptGraphLookup,
         VisualScriptHost,
         VisualScriptInterpreter,
         VisualScriptNodeType,
         VisualScriptRegistry,
         VisualScriptResult,
+        VisualScriptSignal,
+        VisualScriptThrow,
         NullVisualScriptHost,
         scriptBool,
+        scriptColor,
         scriptInteger,
+        scriptList,
+        scriptMap,
         scriptNumber,
+        scriptQuaternion,
         scriptString,
-        scriptVector;
+        scriptVector,
+        scriptVector2,
+        scriptVector4;

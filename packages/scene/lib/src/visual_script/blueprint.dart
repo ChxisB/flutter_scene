@@ -293,12 +293,17 @@ class BlueprintRunner {
   final Set<String> _running = {};
 
   /// The context for [graph], made on first use.
+  ///
+  /// The blueprint's own [Blueprint.graph] is handed over as the lookup, so a
+  /// node that names another graph — a Subgraph, a state's transition — can
+  /// find it without the runtime knowing what a blueprint is.
   VisualScriptContext contextFor(VisualScriptGraph graph) =>
       _contexts[graph] ??= VisualScriptContext(
         graph: graph,
         host: host,
         trace: trace,
         variables: variables,
+        graphs: blueprint.graph,
       );
 
   /// Runs every construction script, once for the life of this runner.
@@ -373,7 +378,7 @@ class BlueprintRunner {
   void beginTick() {
     trace?.clear();
     for (final context in _contexts.values) {
-      context.steps = 0;
+      context.beginTick();
     }
   }
 }

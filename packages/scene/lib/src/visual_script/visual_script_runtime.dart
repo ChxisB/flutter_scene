@@ -82,15 +82,162 @@ class NullVisualScriptHost implements VisualScriptHost {
   void log(String message) => messages.add(message);
 }
 
+/// Finds a graph a node names, for the node types whose shape or behaviour
+/// comes from another graph — a Subgraph, a state's transition.
+///
+/// [Blueprint.graph] has this signature and tears off directly, which is why
+/// this is a function rather than an interface the runtime would have to
+/// import a blueprint to satisfy.
+/// {@category Visual scripting}
+typedef VisualScriptGraphLookup = VisualScriptGraph? Function(String name);
+
+/// Control flow travelling outward past the node that raised it: a Break
+/// leaving a loop, a Throw looking for a Try.
+///
+/// Deliberately not a Dart exception. A node's evaluate calls
+/// [VisualScriptHost.invoke], which is application code, and an application
+/// that wrapped its own `invoke` in a `catch` would silently swallow a
+/// graph's Break — a coupling nobody would ever find.
+/// {@category Visual scripting}
+sealed class VisualScriptSignal {
+  const VisualScriptSignal();
+}
+
+/// Leaves the innermost loop.
+/// {@category Visual scripting}
+final class VisualScriptBreak extends VisualScriptSignal {
+  const VisualScriptBreak();
+}
+
+/// Unwinds until a Try catches it, or until it reaches the top and becomes
+/// the run's error.
+/// {@category Visual scripting}
+final class VisualScriptThrow extends VisualScriptSignal {
+  const VisualScriptThrow(this.message, [this.value]);
+
+  /// What to show whoever is looking at the graph.
+  final String message;
+
+  /// An optional payload, for a Catch that wants more than the message.
+  final Object? value;
+}
+
+/// How a nested run ended.
+/// {@category Visual scripting}
+enum VisualScriptFlowStatus {
+  /// Ran off the end of its wires, which is the ordinary ending.
+  completed,
+
+  /// A Break is travelling outward. A loop clears it and stops iterating;
+  /// anything else passes it on.
+  broke,
+
+  /// A Throw is travelling outward. A Try clears it and takes its Catch pin.
+  threw,
+
+  /// The run stopped on an error — the step budget, the nesting depth, or a
+  /// node the registry does not have. Nothing catches this one.
+  failed,
+}
+
+/// Running a nested flow from inside a node's evaluate.
+///
+/// This is what a loop, a Try, a Subgraph and a state transition all need and
+/// what pushing onto the interpreter's work stack cannot give: a sub-flow
+/// that finishes *before* the node that started it decides what to do next.
+/// Reached as [VisualScriptContext.flow], rather than as another parameter to
+/// every `evaluate` in the library.
+/// {@category Visual scripting}
+abstract class VisualScriptFlow {
+  /// Runs whatever is wired to [node]'s exec output [pinId], to completion,
+  /// in the caller's own frame.
+  VisualScriptFlowStatus runPin(
+    VisualScriptContext context,
+    VisualScriptNodeSpec node,
+    String pinId,
+  );
+
+  /// Runs [graph] from its [entry] event, in a frame of its own, entered from
+  /// [caller].
+  ///
+  /// A frame of its own because node ids are unique only within a graph: run
+  /// a nested graph in the caller's frame and its node 7 would read node 7's
+  /// scratch, and the data-cycle guard would report a node feeding itself
+  /// when it does no such thing. [caller] keys that frame's scratch, so two
+  /// Subgraph nodes wrapping one graph keep their state apart.
+  VisualScriptFlowStatus runGraph(
+    VisualScriptContext context,
+    VisualScriptNodeSpec caller,
+    VisualScriptGraph graph, {
+    String entry = 'event.start',
+  });
+
+  /// Pulls a value out of a nested graph, for a subgraph's output ports.
+  Object? pullFrom(
+    VisualScriptContext context,
+    VisualScriptNodeSpec caller,
+    VisualScriptGraph graph,
+    int nodeId,
+    String pinId,
+  );
+}
+
+/// One graph on the call stack: what the run is walking, and the scratch its
+/// nodes keep.
+/// {@category Visual scripting}
+class VisualScriptFrame {
+  VisualScriptFrame({
+    required this.graph,
+    required this.nodeState,
+    required this.path,
+  });
+
+  /// The graph this frame is running.
+  final VisualScriptGraph graph;
+
+  /// Per-node scratch for this frame. Held by the context and keyed by
+  /// [path], so it outlives the frame — a Delay inside a subgraph has to keep
+  /// counting between ticks.
+  final Map<int, Object?> nodeState;
+
+  /// Nodes whose data pull is in progress in this frame.
+  ///
+  /// Per frame rather than per run: an exec boundary genuinely resets what
+  /// "currently pulling" means, and sharing one set would make every
+  /// legitimate re-pull inside a sub-flow look like a cycle.
+  final Set<int> pulling = {};
+
+  /// What each exec node produced the last time it ran, keyed by node id.
+  ///
+  /// An exec node's outputs happen when it runs, not when somebody reads
+  /// them: a Play Animation asked twice for its Found pin must not play the
+  /// animation twice, and a For Loop asked for its Index must answer with the
+  /// iteration it is on rather than starting the loop again.
+  final Map<int, Map<String, Object?>> execOutputs = {};
+
+  /// The call site, outermost first — `''` for the root, then `'/12'`,
+  /// `'/12/4'`. Two Subgraph nodes wrapping the same graph get different
+  /// paths, so each keeps its own scratch.
+  final String path;
+}
+
 /// The state one run of a graph carries.
 /// {@category Visual scripting}
 class VisualScriptContext {
   VisualScriptContext({
-    required this.graph,
+    required VisualScriptGraph graph,
     required this.host,
     this.trace,
+    this.graphs,
     Map<String, Object?>? variables,
   }) : variables = variables ?? {} {
+    _frames.add(
+      VisualScriptFrame(
+        graph: graph,
+        nodeState: _stateByPath.putIfAbsent('', () => {}),
+        path: '',
+      ),
+    );
     // putIfAbsent rather than assignment: a blueprint's graphs share one map,
     // already seeded from the blueprint's own variables, and a second graph
     // declaring the same name must not reset what the first one has been
@@ -100,8 +247,10 @@ class VisualScriptContext {
     }
   }
 
-  final VisualScriptGraph graph;
   final VisualScriptHost host;
+
+  /// How to find a graph a node names, or null when nothing nests.
+  final VisualScriptGraphLookup? graphs;
 
   /// Where to record what the run did, or null to record nothing.
   ///
@@ -116,9 +265,87 @@ class VisualScriptContext {
   /// to read it.
   final Map<String, Object?> variables;
 
+  final List<VisualScriptFrame> _frames = [];
+
+  /// Every frame's scratch, keyed by call path so it survives the frame being
+  /// popped and re-pushed on the next tick. Never cleared by [beginTick]:
+  /// forgetting it is how a Delay restarts every frame.
+  final Map<String, Map<int, Object?>> _stateByPath = {};
+
+  /// The graph currently running — the one at the top of the call stack, not
+  /// the one the context was made for.
+  VisualScriptGraph get graph => _frames.last.graph;
+
+  /// The graph this context was made for, whatever is nested inside it.
+  VisualScriptGraph get rootGraph => _frames.first.graph;
+
   /// Per-node scratch, for the node types that remember something between
   /// ticks (a delay's remaining time, a Do Once's latch).
-  final Map<int, Object?> nodeState = {};
+  Map<int, Object?> get nodeState => _frames.last.nodeState;
+
+  /// Nodes whose data pull is currently in progress, in the running frame.
+  ///
+  /// Re-entering one is a cycle in the data wires, which unlike an exec loop
+  /// cannot be caught by a step budget: the pull is recursive, so it
+  /// overflows the stack long before any count is reached. A node evaluated
+  /// twice in one pull because two inputs share a source is not in here at
+  /// the second visit, so the diamond that is legitimate stays legal.
+  Set<int> get pulling => _frames.last.pulling;
+
+  /// How deep the call stack is. One while an ordinary graph runs.
+  int get depth => _frames.length;
+
+  /// What each exec node in the running frame last produced.
+  Map<int, Map<String, Object?>> get execOutputs => _frames.last.execOutputs;
+
+  /// Clears what one tick accumulated: the step budget and the values exec
+  /// nodes left behind. Not the scratch — a Delay counting down across ticks
+  /// is the whole point of scratch.
+  void beginTick() {
+    steps = 0;
+    for (final frame in _frames) {
+      frame.execOutputs.clear();
+    }
+  }
+
+  /// Whether the running frame is the one the context was made for, which is
+  /// the only frame whose node ids mean anything to a canvas drawing the
+  /// root graph.
+  bool get isRootFrame => _frames.length == 1;
+
+  /// Pushes a frame for [graph], called from [nodeId], and returns whether
+  /// there was room. Sets [error] and returns false when there was not.
+  bool pushFrame(VisualScriptGraph graph, int nodeId) {
+    if (_frames.length >= maxDepth) {
+      error =
+          'Graphs are nested $maxDepth deep here, which is either a very '
+          'deep subgraph or one that contains itself.';
+      return false;
+    }
+    final path = '${_frames.last.path}/$nodeId';
+    _frames.add(
+      VisualScriptFrame(
+        graph: graph,
+        nodeState: _stateByPath.putIfAbsent(path, () => {}),
+        path: path,
+      ),
+    );
+    return true;
+  }
+
+  /// Pops the frame [pushFrame] pushed. Never pops the root.
+  void popFrame() {
+    if (_frames.length > 1) _frames.removeLast();
+  }
+
+  /// Runs a nested flow. Non-null while a run is in progress.
+  VisualScriptFlow? flow;
+
+  /// A Break or a Throw travelling outward, or null.
+  ///
+  /// Set by the node that raised it and cleared by whatever catches it. A run
+  /// stops while one is set, which is what unwinding is here.
+  VisualScriptSignal? signal;
 
   /// How many exec steps this run has taken, so a cycle in the wires stops
   /// rather than hangs the frame.
@@ -126,7 +353,17 @@ class VisualScriptContext {
 
   /// The step budget one run gets. A graph is authored by hand, so anything
   /// past a few thousand steps in one tick is a loop the author did not mean.
+  ///
+  /// Shared across nested runs on purpose: it is a budget for the whole
+  /// tick's work, and a runaway For Loop is exactly what it exists to catch.
   static const int maxSteps = 10000;
+
+  /// How many graphs may be nested before the run is stopped.
+  ///
+  /// The step budget cannot stand in for this. Each nested run is real Dart
+  /// frames, so a graph that contains itself overflows the machine stack long
+  /// before ten thousand steps are counted.
+  static const int maxDepth = 32;
 
   String? _error;
 
@@ -138,15 +375,6 @@ class VisualScriptContext {
     _error = value;
     trace?.error = value;
   }
-
-  /// Nodes whose data pull is currently in progress.
-  ///
-  /// Re-entering one is a cycle in the data wires, which unlike an exec loop
-  /// cannot be caught by a step budget: the pull is recursive, so it
-  /// overflows the stack long before any count is reached. A node evaluated
-  /// twice in one pull because two inputs share a source is not in here at
-  /// the second visit, so the diamond that is legitimate stays legal.
-  final Set<int> pulling = {};
 }
 
 /// What a node's evaluation produced.
@@ -174,6 +402,7 @@ class VisualScriptNodeType {
     required this.evaluate,
     this.doc = '',
     this.isEvent = false,
+    this.pinsFor,
   });
 
   /// The stable id a [VisualScriptNodeSpec] names.
@@ -192,7 +421,24 @@ class VisualScriptNodeType {
   /// have no exec input.
   final bool isEvent;
 
+  /// The pins a freshly placed node has. Also the whole answer for the node
+  /// types whose shape never varies, which is most of them.
   final List<VisualScriptPin> pins;
+
+  /// The pins one particular node has, when they depend on that node.
+  ///
+  /// Null for a fixed shape. A Switch has an output per case, a Sequence as
+  /// many as it was given, and a Subgraph the ports of the graph it wraps —
+  /// none of which can be written as a list on the type. [graphs] is how the
+  /// last of those finds the graph it names.
+  ///
+  /// Generated pin ids must match `[A-Za-z0-9_]+`: the text format writes
+  /// them unquoted on both sides of a wire.
+  final List<VisualScriptPin> Function(
+    VisualScriptNodeSpec node,
+    VisualScriptGraphLookup? graphs,
+  )?
+  pinsFor;
 
   /// Runs the node. [inputs] holds every input pin's resolved value; the
   /// result carries the output values and which exec pin to follow.
@@ -203,6 +449,36 @@ class VisualScriptNodeType {
   )
   evaluate;
 
+  /// The pins [node] has, asking [pinsFor] when there is one.
+  List<VisualScriptPin> pinsOf(
+    VisualScriptNodeSpec node, [
+    VisualScriptGraphLookup? graphs,
+  ]) => pinsFor?.call(node, graphs) ?? pins;
+
+  Iterable<VisualScriptPin> inputsOf(
+    VisualScriptNodeSpec node, [
+    VisualScriptGraphLookup? graphs,
+  ]) => pinsOf(node, graphs).where((pin) => pin.isInput);
+
+  Iterable<VisualScriptPin> outputsOf(
+    VisualScriptNodeSpec node, [
+    VisualScriptGraphLookup? graphs,
+  ]) => pinsOf(node, graphs).where((pin) => !pin.isInput);
+
+  VisualScriptPin? pinOf(
+    VisualScriptNodeSpec node,
+    String id, [
+    VisualScriptGraphLookup? graphs,
+  ]) {
+    for (final pin in pinsOf(node, graphs)) {
+      if (pin.id == id) return pin;
+    }
+    return null;
+  }
+
+  /// The pins a fresh node of this type has. For a type with a dynamic
+  /// shape this is the starting shape, not the only one — prefer
+  /// [inputsOf]/[outputsOf]/[pinOf] anywhere a node is in hand.
   Iterable<VisualScriptPin> get inputs => pins.where((pin) => pin.isInput);
   Iterable<VisualScriptPin> get outputs => pins.where((pin) => !pin.isInput);
 
@@ -212,6 +488,16 @@ class VisualScriptNodeType {
     }
     return null;
   }
+
+  /// Whether [node] is reached by control flow rather than pulled for a value.
+  ///
+  /// An exec pin of either direction is the tell: a node that participates in
+  /// the exec order produces its outputs when it runs. A node with none is
+  /// pure data and is evaluated on demand.
+  bool isExecDriven(
+    VisualScriptNodeSpec node, [
+    VisualScriptGraphLookup? graphs,
+  ]) => pinsOf(node, graphs).any((pin) => pin.type == VisualScriptType.exec);
 }
 
 /// The node types a graph may use.
@@ -252,7 +538,7 @@ class VisualScriptRegistry {
 
 /// Walks a graph.
 /// {@category Visual scripting}
-class VisualScriptInterpreter {
+class VisualScriptInterpreter implements VisualScriptFlow {
   VisualScriptInterpreter(this.registry);
 
   final VisualScriptRegistry registry;
@@ -271,14 +557,80 @@ class VisualScriptInterpreter {
     String eventType, {
     bool Function(VisualScriptNodeSpec node)? where,
   }) {
+    context.flow ??= this;
     var fired = 0;
     for (final node in context.graph.nodes) {
       if (node.type != eventType) continue;
       if (where != null && !where(node)) continue;
       fired++;
       _run(context, node);
+      // A failed run has already said why. Starting the next event would
+      // evaluate one more node before noticing, and overwrite the reason.
+      if (context.error != null) break;
+      // A Throw nothing caught stops being control flow and becomes the
+      // run's error: there is no outer graph left to hand it to.
+      if (context.signal case final VisualScriptThrow raised) {
+        context.signal = null;
+        context.error = raised.message;
+        break;
+      }
+      context.signal = null;
     }
     return fired;
+  }
+
+  @override
+  VisualScriptFlowStatus runPin(
+    VisualScriptContext context,
+    VisualScriptNodeSpec node,
+    String pinId,
+  ) {
+    for (final link in context.graph.outputsFrom(node.id, pinId)) {
+      final target = context.graph.node(link.toNode);
+      if (target == null) continue;
+      final status = _run(context, target);
+      if (status != VisualScriptFlowStatus.completed) return status;
+    }
+    return VisualScriptFlowStatus.completed;
+  }
+
+  @override
+  VisualScriptFlowStatus runGraph(
+    VisualScriptContext context,
+    VisualScriptNodeSpec caller,
+    VisualScriptGraph graph, {
+    String entry = 'event.start',
+  }) {
+    if (!context.pushFrame(graph, caller.id)) {
+      return VisualScriptFlowStatus.failed;
+    }
+    try {
+      var status = VisualScriptFlowStatus.completed;
+      for (final node in graph.nodes) {
+        if (node.type != entry) continue;
+        status = _run(context, node);
+        if (status != VisualScriptFlowStatus.completed) break;
+      }
+      return status;
+    } finally {
+      context.popFrame();
+    }
+  }
+
+  @override
+  Object? pullFrom(
+    VisualScriptContext context,
+    VisualScriptNodeSpec caller,
+    VisualScriptGraph graph,
+    int nodeId,
+    String pinId,
+  ) {
+    if (!context.pushFrame(graph, caller.id)) return null;
+    try {
+      return evaluateOutput(context, nodeId, pinId);
+    } finally {
+      context.popFrame();
+    }
   }
 
   /// Runs [start], then every exec branch it names, in order.
@@ -288,37 +640,39 @@ class VisualScriptInterpreter {
   /// stack gives when the branches are pushed in reverse; recursion would
   /// give the same order but put the step budget's worth of frames on the
   /// real stack, and the budget is deliberately larger than that is safe.
-  void _run(VisualScriptContext context, VisualScriptNodeSpec start) {
+  VisualScriptFlowStatus _run(
+    VisualScriptContext context,
+    VisualScriptNodeSpec start,
+  ) {
     final pending = <VisualScriptNodeSpec>[start];
     while (pending.isNotEmpty) {
       if (++context.steps > VisualScriptContext.maxSteps) {
         context.error =
             'The graph ran for ${VisualScriptContext.maxSteps} steps without '
-            'finishing, which is a loop in the exec wires.';
-        return;
+            'finishing, which is either a loop in the exec wires or a loop '
+            'node counting further than a frame can afford.';
+        return VisualScriptFlowStatus.failed;
       }
       final node = pending.removeLast();
       final type = registry[node.type];
       if (type == null) {
         context.error = 'Unknown node type "${node.type}".';
-        return;
+        return VisualScriptFlowStatus.failed;
       }
       final inputs = _resolveInputs(context, node, type);
+      // Published before the branches run, so a node downstream reading this
+      // one's outputs — a loop's Index, an event's Delta — sees them.
       final result = type.evaluate(context, node, inputs);
-      final trace = context.trace;
-      if (trace != null) {
-        trace.recordStep(node.id, node.type);
-        for (final entry in inputs.entries) {
-          trace.recordValue(node.id, entry.key, entry.value);
-        }
-        for (final entry in result.outputs.entries) {
-          trace.recordValue(node.id, entry.key, entry.value);
-        }
-        for (final pin in result.next) {
-          trace.recordExec(node.id, pin);
-        }
+      context.execOutputs[node.id] = result.outputs;
+      _record(context, node, inputs, result.outputs, fired: result.next);
+      if (context.error != null) return VisualScriptFlowStatus.failed;
+      // A signal raised while this node ran is travelling outward. Its own
+      // exec outputs are not taken — that is what unwinding means.
+      if (context.signal case final raised?) {
+        return raised is VisualScriptBreak
+            ? VisualScriptFlowStatus.broke
+            : VisualScriptFlowStatus.threw;
       }
-      if (context.error != null) return;
 
       // Reverse, so the first branch named is the first popped and its whole
       // subtree runs before the second begins.
@@ -331,6 +685,34 @@ class VisualScriptInterpreter {
         }
       }
     }
+    return VisualScriptFlowStatus.completed;
+  }
+
+  /// Records a node's step, its values, and the exec pins it took.
+  ///
+  /// Only for the frame the context was made for. A nested graph's node 7 is
+  /// not the root graph's node 7, and a trace keyed by node id alone would
+  /// light up the wrong node on the canvas — better to show nothing than to
+  /// show a lie.
+  void _record(
+    VisualScriptContext context,
+    VisualScriptNodeSpec node,
+    Map<String, Object?> inputs,
+    Map<String, Object?> outputs, {
+    List<String> fired = const [],
+  }) {
+    final trace = context.trace;
+    if (trace == null || !context.isRootFrame) return;
+    trace.recordStep(node.id, node.type);
+    for (final entry in inputs.entries) {
+      trace.recordValue(node.id, entry.key, entry.value);
+    }
+    for (final entry in outputs.entries) {
+      trace.recordValue(node.id, entry.key, entry.value);
+    }
+    for (final pin in fired) {
+      trace.recordExec(node.id, pin);
+    }
   }
 
   /// Resolves every input pin of [node]: the wire if there is one, otherwise
@@ -341,7 +723,7 @@ class VisualScriptInterpreter {
     VisualScriptNodeType type,
   ) {
     final values = <String, Object?>{};
-    for (final pin in type.inputs) {
+    for (final pin in type.inputsOf(node, context.graphs)) {
       if (pin.type == VisualScriptType.exec) continue;
       final link = context.graph.inputTo(node.id, pin.id);
       if (link != null) {
@@ -367,7 +749,11 @@ class VisualScriptInterpreter {
     int nodeId,
     String pinId,
   ) {
-    if (!context.pulling.add(nodeId)) {
+    context.flow ??= this;
+    // Read once: a nested run inside this node's evaluate pushes a frame, and
+    // the set to clean up at the end is the one entered here.
+    final pulling = context.pulling;
+    if (!pulling.add(nodeId)) {
       context.error =
           'Node $nodeId feeds itself, which is a cycle in the data wires.';
       return null;
@@ -386,24 +772,22 @@ class VisualScriptInterpreter {
         context.error = 'Unknown node type "${node.type}".';
         return null;
       }
+      // An exec node answers with what it produced when it ran. Evaluating it
+      // here instead would play the animation a second time, or restart the
+      // loop whose index was being read. A node that has not run yet has no
+      // value to give, and null is the honest answer.
+      if (type.isExecDriven(node, context.graphs)) {
+        return context.execOutputs[nodeId]?[pinId];
+      }
       final inputs = _resolveInputs(context, node, type);
       final outputs = type.evaluate(context, node, inputs).outputs;
       // A pulled node is recorded too. Its value is what a data wire is
       // carrying, and a wire with no label is the thing a trace exists to
       // fix; that a value node never appears in the exec order is the point.
-      final trace = context.trace;
-      if (trace != null) {
-        trace.recordStep(node.id, node.type);
-        for (final entry in inputs.entries) {
-          trace.recordValue(node.id, entry.key, entry.value);
-        }
-        for (final entry in outputs.entries) {
-          trace.recordValue(node.id, entry.key, entry.value);
-        }
-      }
+      _record(context, node, inputs, outputs);
       return outputs[pinId];
     } finally {
-      context.pulling.remove(nodeId);
+      pulling.remove(nodeId);
     }
   }
 }
