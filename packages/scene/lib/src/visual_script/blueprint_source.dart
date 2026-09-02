@@ -123,7 +123,12 @@ String printBlueprint(VisualScriptGraph graph, {String name = ''}) {
   if (graph.variables.isNotEmpty) {
     out.writeln();
     for (final variable in graph.variables) {
-      out.write('var ${variable.name}: ${variable.type.name}');
+      // The scope is written only when it is not the default, so a graph
+      // that never left graph scope reads exactly as it always did.
+      final scope = variable.scope == VisualScriptVariableScope.graph
+          ? ''
+          : ' ${variable.scope.name}';
+      out.write('var$scope ${variable.name}: ${variable.type.name}');
       if (variable.initial != null) {
         out.write(' = ${_printValue(variable.initial)}');
       }
@@ -164,7 +169,8 @@ String printBlueprint(VisualScriptGraph graph, {String name = ''}) {
 // --- parsing -----------------------------------------------------------------
 
 final RegExp _varPattern = RegExp(
-  r'^var\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z][A-Za-z0-9]*)\s*'
+  r'^var(?:\s+(flow|graph|object|scene|application|saved))?'
+  r'\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z][A-Za-z0-9]*)\s*'
   r'(?:=\s*(.+))?$',
 );
 
@@ -329,7 +335,7 @@ BlueprintParseResult parseBlueprint(String source) {
 
     final variable = _varPattern.firstMatch(text);
     if (variable != null) {
-      final typeName = variable.group(2)!;
+      final typeName = variable.group(3)!;
       final type = VisualScriptType.values
           .where((t) => t.name == typeName)
           .firstOrNull;
@@ -343,11 +349,14 @@ BlueprintParseResult parseBlueprint(String source) {
         );
         continue;
       }
-      final initial = variable.group(3);
+      final initial = variable.group(4);
       graph.variables.add(
         VisualScriptVariable(
-          name: variable.group(1)!,
+          name: variable.group(2)!,
           type: type,
+          // The pattern only matches scopes that exist, so an absent group
+          // is the default rather than something unrecognized.
+          scope: VisualScriptVariableScope.parse(variable.group(1)),
           initial: initial == null ? null : _parseValue(initial),
         ),
       );

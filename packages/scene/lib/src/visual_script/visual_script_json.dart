@@ -51,6 +51,10 @@ Map<String, Object?> encodeVisualScript(VisualScriptGraph graph) => {
         {
           'name': variable.name,
           'type': variable.type.name,
+          // Omitted for graph scope, which is what every variable saved
+          // before scopes existed is.
+          if (variable.scope != VisualScriptVariableScope.graph)
+            'scope': variable.scope.name,
           if (variable.initial != null)
             'initial': _encodeValue(variable.initial),
         },
@@ -124,6 +128,7 @@ VisualScriptGraph decodeVisualScript(Map<String, Object?> json) {
           (candidate) => candidate.name == map['type'],
           orElse: () => VisualScriptType.any,
         ),
+        scope: VisualScriptVariableScope.parse(map['scope'] as String?),
         initial: _decodeValue(map['initial']),
       ),
     );
@@ -233,6 +238,10 @@ Map<String, Object?> encodeBlueprint(Blueprint blueprint) => {
         {
           'name': variable.name,
           'type': variable.type.name,
+          // Omitted for graph scope, which is what every variable saved
+          // before scopes existed is.
+          if (variable.scope != VisualScriptVariableScope.graph)
+            'scope': variable.scope.name,
           if (variable.initial != null)
             'initial': _encodeValue(variable.initial),
         },
@@ -272,6 +281,7 @@ Blueprint decodeBlueprint(Map<String, Object?> json) {
                 .where((type) => type.name == map['type'])
                 .firstOrNull ??
             VisualScriptType.any,
+        scope: VisualScriptVariableScope.parse(map['scope'] as String?),
         initial: _decodeValue(map['initial']),
       ),
     );

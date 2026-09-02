@@ -19,6 +19,34 @@ import 'package:flutter_scene/src/scene.dart';
 import 'package:flutter_scene/src/sky_sources.dart';
 import 'package:flutter_scene/src/skybox.dart' show SunSky;
 
+/// Object-scope variables, keyed by the node they belong to.
+///
+/// An [Expando] rather than a field on [Node]: variables are a scripting
+/// concern, and a scene without a graph in it should not carry a map per node.
+final Expando<Map<String, Object?>> _objectVariables = Expando();
+
+/// Scene-scope variables, keyed by the root a node hangs from.
+final Expando<Map<String, Object?>> _sceneVariables = Expando();
+
+/// Stands in for the base host's own answer for the scopes that are not about
+/// a node — application and saved, which belong to the process.
+final _DefaultVariableStores _defaults = _DefaultVariableStores();
+
+class _DefaultVariableStores extends VisualScriptHost {
+  @override
+  double get deltaSeconds => 0;
+  @override
+  double get elapsedSeconds => 0;
+  @override
+  Object? read(String path) => null;
+  @override
+  bool write(String path, Object? value) => false;
+  @override
+  Object? invoke(String action, Map<String, Object?> arguments) => null;
+  @override
+  void log(String message) {}
+}
+
 /// Runs a graph against a live node.
 ///
 /// Paths are read and written against the owning node by default, and against
@@ -51,6 +79,32 @@ class SceneVisualScriptHost implements VisualScriptHost {
 
   /// Signals raised since the last tick, consumed by the On Signal event.
   final Set<String> pendingSignals = {};
+
+  @override
+  Map<String, Object?> variablesIn(VisualScriptVariableScope scope) =>
+      switch (scope) {
+        // Keyed by the node, not by the host: two scripts on one object share
+        // its variables, and each has a host of its own.
+        VisualScriptVariableScope.object =>
+          _objectVariables[owner] ??= <String, Object?>{},
+        // Keyed by the root the node hangs from, which is the closest thing
+        // to "this scene" a node can reach without knowing about documents.
+        VisualScriptVariableScope.scene =>
+          _sceneVariables[_rootOf(owner)] ??= <String, Object?>{},
+        // Application and Saved are the same store for everyone, which is
+        // what the base host already does. Saved has nowhere durable to go
+        // yet, so it behaves as Application until something gives it one.
+        _ => _defaults.variablesIn(scope),
+      };
+
+  /// The topmost node above [node], which stands in for the scene it is in.
+  static Node _rootOf(Node node) {
+    var current = node;
+    for (var parent = current.parent; parent != null; parent = current.parent) {
+      current = parent;
+    }
+    return current;
+  }
 
   /// Splits a path into the node it targets and the property on it.
   ///

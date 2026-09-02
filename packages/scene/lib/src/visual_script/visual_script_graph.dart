@@ -180,7 +180,12 @@ class VisualScriptLink {
 /// A graph's own variables: named values that persist across a run.
 /// {@category Visual scripting}
 class VisualScriptVariable {
-  VisualScriptVariable({required this.name, required this.type, this.initial});
+  VisualScriptVariable({
+    required this.name,
+    required this.type,
+    this.initial,
+    this.scope = VisualScriptVariableScope.graph,
+  });
 
   /// The name Get and Set nodes reference.
   final String name;
@@ -189,6 +194,59 @@ class VisualScriptVariable {
 
   /// The value the variable holds when a graph starts.
   final Object? initial;
+
+  /// Where it lives, and how long it lasts.
+  final VisualScriptVariableScope scope;
+}
+
+/// Where a variable lives, which is the same question as how long it lasts
+/// and who else can see it.
+///
+/// The scopes are a ladder: each one outlives the one above it and is visible
+/// to more of the application. Picking the narrowest one that works is how a
+/// graph stays understandable — a value in [application] scope can be written
+/// by anything, and finding out what did is a search of the whole project.
+/// {@category Visual scripting}
+enum VisualScriptVariableScope {
+  /// One run of one flow. Created by a Set node rather than declared, and
+  /// gone the moment the flow it was set in finishes.
+  ///
+  /// The scope for a value passed between two nodes that a wire cannot
+  /// reasonably reach across.
+  flow('Flow'),
+
+  /// The blueprint's own variables, shared by every graph in it: the event
+  /// graph, the construction script, and the functions they call.
+  graph('Graph'),
+
+  /// Everything attached to one node in the scene, so two scripts on the same
+  /// object share them.
+  object('Object'),
+
+  /// Everything in the open document, so one object can leave a value where
+  /// another finds it.
+  scene('Scene'),
+
+  /// Everything for as long as the application runs. Reset when it quits.
+  application('Application'),
+
+  /// Like [application], but written somewhere that outlives the process —
+  /// which makes it the simplest save system there is.
+  saved('Saved');
+
+  const VisualScriptVariableScope(this.label);
+
+  /// What the blackboard calls this scope.
+  final String label;
+
+  /// The scope named [name], or [graph] when it is not one of these.
+  ///
+  /// A document naming a scope this build does not have reads as a graph
+  /// variable rather than being dropped: a variable in the wrong place is
+  /// recoverable, and a missing one is not.
+  static VisualScriptVariableScope parse(String? name) =>
+      values.where((scope) => scope.name == name).firstOrNull ??
+      VisualScriptVariableScope.graph;
 }
 
 /// What a graph in a blueprint is for.

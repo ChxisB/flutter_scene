@@ -97,7 +97,8 @@ export 'src/visual_script/visual_script_graph.dart'
         VisualScriptNodeSpec,
         VisualScriptPin,
         VisualScriptType,
-        VisualScriptVariable;
+        VisualScriptVariable,
+        VisualScriptVariableScope;
 export 'src/visual_script/visual_script_json.dart'
     show
         decodeBlueprint,
@@ -142,6 +143,7 @@ export 'src/visual_script/visual_script_library.dart'
         sequencePin,
         setVariable,
         signalNameOf,
+        variableScopeOf,
         sineWave,
         standardVisualScriptNodes,
         standardVisualScriptRegistry,
@@ -214,6 +216,7 @@ export 'src/visual_script/visual_script_runtime.dart'
         VisualScriptSignal,
         VisualScriptThrow,
         NullVisualScriptHost,
+        applicationVisualScriptVariables,
         scriptBool,
         scriptColor,
         scriptInteger,

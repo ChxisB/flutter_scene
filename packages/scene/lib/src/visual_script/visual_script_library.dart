@@ -297,7 +297,10 @@ final VisualScriptNodeType getVariable = VisualScriptNodeType(
   id: 'var.get',
   label: 'Get Variable',
   category: 'Variables',
-  doc: 'Reads one of the graph\'s variables.',
+  doc:
+      'Reads a variable. Which one depends on the scope written into the '
+      'node — the blueprint\'s own by default, or the object, scene, '
+      'application or saved store.',
   pins: const [
     VisualScriptPin(
       id: 'name',
@@ -311,16 +314,38 @@ final VisualScriptNodeType getVariable = VisualScriptNodeType(
       type: VisualScriptType.any,
       isInput: false,
     ),
+    VisualScriptPin(
+      id: 'found',
+      label: 'Exists',
+      type: VisualScriptType.boolean,
+      isInput: false,
+      doc: 'False when nothing of that name has been set in this scope.',
+    ),
   ],
-  evaluate: (context, node, inputs) =>
-      _out({'value': context.variables['${inputs['name']}']}),
+  evaluate: (context, node, inputs) {
+    final store = context.variablesIn(variableScopeOf(node));
+    final name = '${inputs['name']}';
+    return _out({'value': store[name], 'found': store.containsKey(name)});
+  },
 );
+
+/// The scope a Get or Set Variable node reads and writes.
+///
+/// Written into the node rather than taken from a pin: a wire could make it
+/// different on different frames, and a variable that moves between stores as
+/// the graph runs is not a variable.
+/// {@category Visual scripting}
+VisualScriptVariableScope variableScopeOf(VisualScriptNodeSpec node) =>
+    VisualScriptVariableScope.parse(node.literals['scope'] as String?);
 
 final VisualScriptNodeType setVariable = VisualScriptNodeType(
   id: 'var.set',
   label: 'Set Variable',
   category: 'Variables',
-  doc: 'Writes one of the graph\'s variables.',
+  doc:
+      'Writes a variable, in the scope written into the node. A name that is '
+      'not declared anywhere is created here, which is how a Flow-scope '
+      'variable comes into being.',
   pins: const [
     _execIn,
     VisualScriptPin(
@@ -340,7 +365,8 @@ final VisualScriptNodeType setVariable = VisualScriptNodeType(
     ),
   ],
   evaluate: (context, node, inputs) {
-    context.variables['${inputs['name']}'] = inputs['value'];
+    context.variablesIn(variableScopeOf(node))['${inputs['name']}'] =
+        inputs['value'];
     return (outputs: {'out': inputs['value']}, next: const <String>['then']);
   },
 );

@@ -200,24 +200,36 @@ class Blueprint {
   /// declaration leaves every node reading one that no longer exists — and an
   /// unset variable reads as null rather than as an error, so the script goes
   /// on running and quietly does the wrong thing.
-  bool renameVariable(String from, String to) {
+  /// [scope] narrows both the declaration renamed and the nodes followed, so
+  /// a Graph variable called `count` and an Object one of the same name stay
+  /// separate things.
+  bool renameVariable(
+    String from,
+    String to, {
+    VisualScriptVariableScope scope = VisualScriptVariableScope.graph,
+  }) {
     if (from == to) return false;
     if (to.isEmpty) return false;
-    if (variables.any((variable) => variable.name == to)) return false;
-    final index = variables.indexWhere((variable) => variable.name == from);
+    bool matches(VisualScriptVariable variable, String name) =>
+        variable.name == name && variable.scope == scope;
+    if (variables.any((variable) => matches(variable, to))) return false;
+    final index = variables.indexWhere((variable) => matches(variable, from));
     if (index < 0) return false;
     final existing = variables[index];
     variables[index] = VisualScriptVariable(
       name: to,
       type: existing.type,
       initial: existing.initial,
+      scope: existing.scope,
     );
     for (final graph in graphs) {
       for (final node in graph.nodes) {
         if (node.type != variableGetType && node.type != variableSetType) {
           continue;
         }
-        if (node.literals['name'] == from) node.literals['name'] = to;
+        if (node.literals['name'] != from) continue;
+        if (variableScopeOf(node) != scope) continue;
+        node.literals['name'] = to;
       }
     }
     return true;

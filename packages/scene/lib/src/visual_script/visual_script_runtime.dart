@@ -41,11 +41,43 @@ abstract class VisualScriptHost {
 
   /// Reports a message from a Print node.
   void log(String message);
+
+  /// The store behind [scope], for the scopes that outlive a graph.
+  ///
+  /// Only [VisualScriptVariableScope.object], `scene`, `application` and
+  /// `saved` ever reach here; flow and graph variables live in the run and
+  /// never ask the host. The default gives every scope a map of its own,
+  /// which is right for a test and for anything single-scene; a host with a
+  /// real document overrides `object` and `scene` to point at it, and one
+  /// with somewhere to write overrides `saved`.
+  ///
+  /// [VisualScriptVariableScope.application] is deliberately shared across
+  /// hosts by default — that is what "application" means — so a graph on one
+  /// node and a graph on another see the same value.
+  Map<String, Object?> variablesIn(VisualScriptVariableScope scope) =>
+      scope == VisualScriptVariableScope.application
+      ? applicationVisualScriptVariables
+      : (_hostVariables[this] ??= {})[scope] ??= {};
 }
+
+/// The application-scope store: one map for the whole process, because that
+/// is the scope's whole definition.
+///
+/// Cleared by a test that needs to start from nothing; nothing else should
+/// need to touch it, since [VisualScriptHost.variablesIn] is the way in.
+/// {@category Visual scripting}
+final Map<String, Object?> applicationVisualScriptVariables = {};
+
+/// Per-host stores for the scopes a plain host has nowhere better to keep.
+///
+/// An [Expando] rather than a field, so [VisualScriptHost] stays an interface
+/// anything can implement without inheriting storage it may not want.
+final Expando<Map<VisualScriptVariableScope, Map<String, Object?>>>
+_hostVariables = Expando();
 
 /// A host that does nothing, for a graph exercised without a scene.
 /// {@category Visual scripting}
-class NullVisualScriptHost implements VisualScriptHost {
+class NullVisualScriptHost extends VisualScriptHost {
   NullVisualScriptHost({this.deltaSeconds = 1 / 60, this.elapsedSeconds = 0});
 
   @override
@@ -250,9 +282,16 @@ class VisualScriptContext {
     // putIfAbsent rather than assignment: a blueprint's graphs share one map,
     // already seeded from the blueprint's own variables, and a second graph
     // declaring the same name must not reset what the first one has been
-    // doing with it.
+    // doing with it. The same reasoning applies with more force to the wider
+    // scopes — an Application variable that reset to its initial every time
+    // some graph mentioning it started would not be one.
     for (final variable in graph.variables) {
-      this.variables.putIfAbsent(variable.name, () => variable.initial);
+      // Flow variables are not declared and have no initial to seed: they
+      // begin when a Set node writes one.
+      if (variable.scope == VisualScriptVariableScope.flow) continue;
+      variablesIn(
+        variable.scope,
+      ).putIfAbsent(variable.name, () => variable.initial);
     }
   }
 
@@ -306,6 +345,24 @@ class VisualScriptContext {
 
   /// What each exec node in the running frame last produced.
   Map<int, Map<String, Object?>> get execOutputs => _frames.last.execOutputs;
+
+  /// The variables one run of one flow has, cleared when that run ends.
+  ///
+  /// These are never declared: a Set node in flow scope creates one, and
+  /// anything downstream in the same run can read it.
+  final Map<String, Object?> flowVariables = {};
+
+  /// The store a variable of [scope] lives in.
+  ///
+  /// Flow and graph scope are the run's own; everything wider belongs to the
+  /// host, which knows what an object, a scene and a save file are and the
+  /// interpreter does not.
+  Map<String, Object?> variablesIn(VisualScriptVariableScope scope) =>
+      switch (scope) {
+        VisualScriptVariableScope.flow => flowVariables,
+        VisualScriptVariableScope.graph => variables,
+        _ => host.variablesIn(scope),
+      };
 
   /// Clears what one tick accumulated: the step budget and the values exec
   /// nodes left behind. Not the scratch — a Delay counting down across ticks
@@ -579,6 +636,9 @@ class VisualScriptInterpreter implements VisualScriptFlow {
       if (node.type != eventType) continue;
       if (where != null && !where(node)) continue;
       fired++;
+      // One event is one flow, so its flow variables start empty and do not
+      // leak into the next event that happens to run this tick.
+      context.flowVariables.clear();
       _run(context, node);
       // A failed run has already said why. Starting the next event would
       // evaluate one more node before noticing, and overwrite the reason.
