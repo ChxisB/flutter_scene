@@ -179,6 +179,16 @@ class VisualScriptLayout {
     return null;
   }
 
+  /// The nodes [box] touches, for a marquee selection.
+  ///
+  /// Touching rather than containing: dragging a box that has to swallow a
+  /// node whole means dragging it further than the eye expects, and every
+  /// graph editor that gets this wrong feels stiff.
+  List<int> nodesTouching(Rect box) => [
+    for (final node in graph.nodes)
+      if (boundsOf(node).overlaps(box)) node.id,
+  ];
+
   /// The nodes wholly inside [comment], which move with it.
   List<VisualScriptNodeSpec> nodesInside(VisualScriptComment comment) {
     final box = Rect.fromLTWH(
@@ -390,6 +400,7 @@ class VisualScriptCanvasPainter extends CustomPainter {
     required this.zoom,
     required this.selected,
     required this.wireFrom,
+    this.marquee,
     required this.wirePointer,
     this.trace,
     this.graphs,
@@ -399,7 +410,14 @@ class VisualScriptCanvasPainter extends CustomPainter {
   final VisualScriptRegistry registry;
   final Offset pan;
   final double zoom;
-  final int? selected;
+
+  /// Every node currently picked. Several, because a graph is edited in
+  /// groups — moved, deleted, collapsed into a function — far more often than
+  /// one node at a time.
+  final Set<int> selected;
+
+  /// The box being dragged out to select with, in canvas space, or null.
+  final Rect? marquee;
   final VisualScriptPortRef? wireFrom;
   final Offset? wirePointer;
 
@@ -446,6 +464,7 @@ class VisualScriptCanvasPainter extends CustomPainter {
     for (final node in graph.nodes) {
       _paintNode(canvas, node);
     }
+    if (marquee case final box?) _paintMarquee(canvas, box);
     canvas.restore();
   }
 
@@ -584,6 +603,18 @@ class VisualScriptCanvasPainter extends CustomPainter {
     );
   }
 
+  void _paintMarquee(Canvas canvas, Rect box) {
+    canvas
+      ..drawRect(box, Paint()..color = editorAccentColor.withValues(alpha: 0.1))
+      ..drawRect(
+        box,
+        Paint()
+          ..color = editorAccentColor
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1,
+      );
+  }
+
   void _paintComment(Canvas canvas, VisualScriptComment comment) {
     final bounds = Rect.fromLTWH(
       comment.position.x,
@@ -660,9 +691,11 @@ class VisualScriptCanvasPainter extends CustomPainter {
         centre,
         visualScriptPortRadius + 1.5,
         Paint()
-          ..color = node.id == selected ? editorAccentColor : editorSurfaceColor
+          ..color = selected.contains(node.id)
+              ? editorAccentColor
+              : editorSurfaceColor
           ..style = PaintingStyle.stroke
-          ..strokeWidth = node.id == selected ? 1.8 : 1,
+          ..strokeWidth = selected.contains(node.id) ? 1.8 : 1,
       );
   }
 
@@ -673,7 +706,7 @@ class VisualScriptCanvasPainter extends CustomPainter {
     }
     final type = registry[node.type];
     final bounds = layout.boundsOf(node);
-    final isSelected = node.id == selected;
+    final isSelected = selected.contains(node.id);
     // While a wire is in hand, a node that cannot take it steps back. The
     // ones left at full strength are the answer to "where can this go".
     final reachable = _canReach(node);

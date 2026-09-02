@@ -25,6 +25,7 @@ import '../blueprints/blueprint_file.dart';
 import '../controller/editor_controller.dart';
 import '../shell/editor_theme.dart';
 import 'my_blueprint_panel.dart';
+import 'visual_script_collapse.dart';
 import 'visual_script_details.dart';
 import 'visual_script_inspector.dart';
 import 'visual_script_layout.dart';
@@ -92,7 +93,17 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
   Offset _pan = const Offset(40, 40);
   double _zoom = 1;
 
-  int? _selected;
+  /// Every node picked, and the one whose details show.
+  ///
+  /// A set rather than a single id: a graph is edited in groups — moved,
+  /// deleted, collapsed into a function — much more often than one node at a
+  /// time, and the collapse depends entirely on this.
+  final Set<int> _selection = {};
+
+  /// The last node clicked, which is the one the details panel describes.
+  int? _primary;
+
+  int? get _selected => _primary;
 
   /// The variable whose details are showing, by name, or null.
   ///
@@ -120,6 +131,46 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
 
   /// The declared event whose details are showing, by name, or null.
   String? _selectedEvent;
+
+  /// The box being dragged out to select with, in canvas space.
+  Offset? _marqueeFrom;
+  Offset? _marqueeTo;
+
+  /// Whether the current drag is panning the view rather than editing.
+  bool _panning = false;
+
+  /// Where each moving node started, so a group drag moves them together
+  /// rather than snapping them all onto the pointer.
+  final Map<int, Offset> _dragStart = {};
+
+  /// Replaces the selection with [id], or clears it. Call inside setState.
+  void _select(int? id) {
+    _selection
+      ..clear()
+      ..addAll(id == null ? const <int>[] : [id]);
+    _primary = id;
+  }
+
+  /// Adds or removes [id], the way a modifier-click does. Call inside
+  /// setState.
+  void _toggle(int id) {
+    if (_selection.add(id)) {
+      _primary = id;
+      return;
+    }
+    _selection.remove(id);
+    _primary = _primary == id
+        ? (_selection.isEmpty ? null : _selection.last)
+        : _primary;
+  }
+
+  /// The box the marquee currently covers, or null.
+  Rect? get _marquee {
+    final from = _marqueeFrom;
+    final to = _marqueeTo;
+    if (from == null || to == null) return null;
+    return Rect.fromPoints(from, to);
+  }
 
   /// The wire being drawn, if any: where it started and where the pointer is.
   VisualScriptPortRef? _wireFrom;
@@ -189,7 +240,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
         // dropped when the selection moves to a different one.
         if (id != _graphOwner) {
           _openGraphName = null;
-          _selected = null;
+          _select(null);
         }
         _graphOwner = id;
         _graphCursor = cursor;
@@ -328,14 +379,14 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     final at = _toCanvas(event.localPosition);
     final layout = _layout(graph);
 
-    // Right-click anywhere is "add something here", the way it is in every
-    // graph editor. On a node it selects instead, so a context menu for the
-    // node has somewhere to grow later.
+    // Right-drag pans and right-click adds, which is the arrangement every
+    // graph editor of this shape uses. Which of the two it was is only known
+    // on release, so the decision waits there.
     if (event.buttons == kSecondaryButton) {
-      final onNode = layout.nodeAt(at);
       setState(() {
-        _selected = onNode;
-        if (onNode == null) _openPalette(at: event.localPosition, drop: at);
+        _panning = true;
+        _marqueeFrom = event.localPosition;
+        _marqueeTo = null;
       });
       return;
     }
@@ -378,7 +429,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     if (header != null) {
       final comment = graph.comment(header)!;
       setState(() {
-        _selected = null;
+        _select(null);
         _selectedVariable = null;
         _selectedEvent = null;
         _selectedComment = header;
@@ -395,8 +446,27 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     final node = layout.nodeAt(at);
     if (node != null) {
       final spec = graph.node(node)!;
+      final extending =
+          HardwareKeyboard.instance.isShiftPressed ||
+          HardwareKeyboard.instance.isMetaPressed ||
+          HardwareKeyboard.instance.isControlPressed;
       setState(() {
-        _selected = node;
+        if (extending) {
+          _toggle(node);
+        } else if (!_selection.contains(node)) {
+          // Clicking inside an existing selection keeps it, so a group can be
+          // dragged by any of its members.
+          _select(node);
+        } else {
+          _primary = node;
+        }
+        _dragStart
+          ..clear()
+          ..addEntries([
+            for (final id in _selection)
+              if (graph.node(id) case final moving?)
+                MapEntry(id, Offset(moving.position.x, moving.position.y)),
+          ]);
         _selectedVariable = null;
         _selectedEvent = null;
         _selectedComment = null;
@@ -405,8 +475,11 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
       });
       return;
     }
+    // Empty canvas: start a marquee. Extending keeps what was already picked.
     setState(() {
-      _selected = null;
+      _marqueeFrom = at;
+      _marqueeTo = at;
+      if (!HardwareKeyboard.instance.isShiftPressed) _select(null);
       _selectedVariable = null;
       _selectedEvent = null;
       _selectedComment = null;
@@ -415,6 +488,17 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
 
   void _onPointerMove(PointerMoveEvent event, VisualScriptGraph graph) {
     final at = _toCanvas(event.localPosition);
+    if (_panning) {
+      setState(() {
+        _pan += event.delta;
+        _marqueeTo = event.localPosition;
+      });
+      return;
+    }
+    if (_marqueeFrom != null) {
+      setState(() => _marqueeTo = at);
+      return;
+    }
     if (_wireFrom != null) {
       setState(() => _wirePointer = at);
       return;
@@ -455,20 +539,62 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     }
     final dragging = _dragging;
     if (dragging != null) {
-      final spec = graph.node(dragging);
-      if (spec == null) return;
+      final anchor = _dragStart[dragging];
+      if (anchor == null) return;
       final moved = at - _dragOffset;
-      setState(() => spec.position.setValues(moved.dx, moved.dy));
+      final by = moved - anchor;
+      // Every selected node moves by the same offset from where it started,
+      // rather than each chasing the pointer.
+      setState(() {
+        for (final entry in _dragStart.entries) {
+          graph
+              .node(entry.key)
+              ?.position
+              .setValues(entry.value.dx + by.dx, entry.value.dy + by.dy);
+        }
+      });
       return;
     }
-    // Nothing grabbed: drag the canvas.
-    setState(() => _pan += event.delta);
   }
 
   Future<void> _onPointerUp(
     PointerUpEvent event,
     VisualScriptGraph graph,
   ) async {
+    if (_panning) {
+      final from = _marqueeFrom;
+      final travelled = from == null
+          ? 0.0
+          : (event.localPosition - from).distance;
+      setState(() {
+        _panning = false;
+        _marqueeFrom = null;
+        _marqueeTo = null;
+        // A right-click that did not travel is a click, and a click on empty
+        // canvas is "add something here".
+        if (travelled < 4) {
+          final at = _toCanvas(event.localPosition);
+          if (_layout(graph).nodeAt(at) == null) {
+            _openPalette(at: event.localPosition, drop: at);
+          }
+        }
+      });
+      return;
+    }
+    if (_marqueeFrom != null && _dragging == null && _wireFrom == null) {
+      final box = _marquee;
+      setState(() {
+        if (box != null) {
+          for (final id in _layout(graph).nodesTouching(box)) {
+            _selection.add(id);
+            _primary = id;
+          }
+        }
+        _marqueeFrom = null;
+        _marqueeTo = null;
+      });
+      return;
+    }
     final from = _wireFrom;
     if (from != null) {
       final at = _toCanvas(event.localPosition);
@@ -549,7 +675,10 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
       return;
     }
     if (_dragging != null) {
-      setState(() => _dragging = null);
+      setState(() {
+        _dragging = null;
+        _dragStart.clear();
+      });
       await _commit();
     }
   }
@@ -654,7 +783,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     final event = VisualScriptEventSpec(name: name);
     setState(() {
       blueprint.events.add(event);
-      _selected = null;
+      _select(null);
       _selectedEvent = name;
     });
     await _commit();
@@ -703,6 +832,129 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     await _commit();
   }
 
+  /// What was last copied, so it survives switching graphs and blueprints.
+  ///
+  /// Held as a graph rather than as a list of nodes, because the wires
+  /// between the copied nodes are half of what was copied.
+  static VisualScriptGraph? _clipboard;
+
+  /// The selection as a standalone graph: the nodes, and the wires that run
+  /// between two of them.
+  ///
+  /// A wire with one end outside the selection is dropped rather than kept
+  /// dangling — it belonged to the graph, not to the piece being lifted out.
+  VisualScriptGraph _lift(VisualScriptGraph graph) {
+    final lifted = VisualScriptGraph();
+    for (final id in _selection) {
+      final node = graph.node(id);
+      if (node == null) continue;
+      lifted.nodes.add(
+        VisualScriptNodeSpec(
+          id: node.id,
+          type: node.type,
+          position: node.position.clone(),
+          literals: Map.of(node.literals),
+        ),
+      );
+    }
+    for (final link in graph.links) {
+      if (_selection.contains(link.fromNode) &&
+          _selection.contains(link.toNode)) {
+        lifted.links.add(link);
+      }
+    }
+    return lifted;
+  }
+
+  /// Copies [source] into [graph] with fresh ids, and selects what landed.
+  Future<void> _paste(
+    VisualScriptGraph graph,
+    VisualScriptGraph source, {
+    Offset offset = const Offset(24, 24),
+  }) async {
+    if (source.nodes.isEmpty) return;
+    final remap = <int, int>{};
+    final landed = <int>[];
+    for (final node in source.nodes) {
+      final copy = graph.add(
+        node.type,
+        position: Vector2(
+          node.position.x + offset.dx,
+          node.position.y + offset.dy,
+        ),
+      );
+      copy.literals.addAll(node.literals);
+      remap[node.id] = copy.id;
+      landed.add(copy.id);
+    }
+    for (final link in source.links) {
+      final from = remap[link.fromNode];
+      final to = remap[link.toNode];
+      if (from == null || to == null) continue;
+      graph.links.add(
+        VisualScriptLink(
+          fromNode: from,
+          fromPin: link.fromPin,
+          toNode: to,
+          toPin: link.toPin,
+        ),
+      );
+    }
+    setState(() {
+      _selection
+        ..clear()
+        ..addAll(landed);
+      _primary = landed.last;
+      _selectedComment = null;
+    });
+    await _commit();
+  }
+
+  void _copySelection(VisualScriptGraph graph) {
+    if (_selection.isEmpty) return;
+    _clipboard = _lift(graph);
+  }
+
+  Future<void> _duplicateSelection(VisualScriptGraph graph) async {
+    if (_selection.isEmpty) return;
+    await _paste(graph, _lift(graph));
+  }
+
+  Future<void> _pasteClipboard(VisualScriptGraph graph) async {
+    final source = _clipboard;
+    if (source != null) await _paste(graph, source);
+  }
+
+  /// Moves the selected nodes into a graph of their own.
+  Future<void> _collapseSelection(
+    VisualScriptGraph graph,
+    VisualScriptGraphKind kind,
+  ) async {
+    final blueprint = _blueprint;
+    if (blueprint == null || _selection.isEmpty) return;
+    final layout = _layout(graph);
+    final call = collapseIntoGraph(
+      blueprint: blueprint,
+      source: graph,
+      selection: _selection,
+      kind: kind,
+      typeOf: (node, pin, isInput) =>
+          layout.typeOf((node: node, pin: pin, isInput: isInput)),
+    );
+    if (call == null) return;
+    setState(() => _select(call.id));
+    await _commit();
+  }
+
+  void _selectAll(VisualScriptGraph graph) {
+    setState(() {
+      _selection
+        ..clear()
+        ..addAll(graph.nodes.map((node) => node.id));
+      _primary = _selection.isEmpty ? null : _selection.last;
+    });
+  }
+
   /// Puts a comment box around whatever is on screen.
   Future<void> _addComment(VisualScriptGraph graph) async {
     final centre = _toCanvas(
@@ -712,7 +964,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
       position: Vector2(centre.dx - 120, centre.dy - 80),
     );
     setState(() {
-      _selected = null;
+      _select(null);
       _selectedComment = comment.id;
     });
     await _commit();
@@ -729,10 +981,13 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
   }
 
   Future<void> _deleteSelected(VisualScriptGraph graph) async {
-    final selected = _selected;
-    if (selected == null) return;
-    graph.removeNode(selected);
-    setState(() => _selected = null);
+    if (_selection.isEmpty) return;
+    // Copied first: removeNode edits the graph, and the set is what says
+    // which ones to remove.
+    for (final id in _selection.toList()) {
+      graph.removeNode(id);
+    }
+    setState(() => _select(null));
     await _commit();
   }
 
@@ -790,7 +1045,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     }
 
     setState(() {
-      _selected = node.id;
+      _select(node.id);
       _closePalette();
     });
     await _commit();
@@ -817,7 +1072,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
     final added = blueprint.addGraph(VisualScriptGraph(), kind: kind);
     setState(() {
       _openGraphName = added.name;
-      _selected = null;
+      _select(null);
     });
     await _commit();
   }
@@ -847,7 +1102,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
         _openGraphName = blueprint.graphs.isEmpty
             ? null
             : blueprint.graphs.first.name;
-        _selected = null;
+        _select(null);
       }
     });
     await _commit();
@@ -918,7 +1173,7 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
                         openGraph: graph,
                         onOpenGraph: (picked) => setState(() {
                           _openGraphName = picked.name;
-                          _selected = null;
+                          _select(null);
                         }),
                         onAddGraph: (kind) => unawaited(_addGraph(kind)),
                         onRenameGraph: (target, name) =>
@@ -928,14 +1183,14 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
                         selectedVariable: _selectedVariable,
                         onSelectVariable: (variable) => setState(() {
                           _selectedVariable = variable.name;
-                          _selected = null;
+                          _select(null);
                           _selectedEvent = null;
                           _selectedComment = null;
                         }),
                         selectedEvent: _selectedEvent,
                         onSelectEvent: (event) => setState(() {
                           _selectedEvent = event.name;
-                          _selected = null;
+                          _select(null);
                           _selectedVariable = null;
                           _selectedComment = null;
                         }),
@@ -1055,8 +1310,10 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
             icon: const Icon(Icons.delete_outline, size: 15),
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints.tightFor(width: 24, height: 24),
-            tooltip: 'Delete the selected node',
-            onPressed: _selected == null ? null : () => _deleteSelected(graph),
+            tooltip: _selection.length > 1
+                ? 'Delete the ${_selection.length} selected nodes'
+                : 'Delete the selected node',
+            onPressed: _selection.isEmpty ? null : () => _deleteSelected(graph),
           ),
           IconButton(
             icon: Icon(
@@ -1082,6 +1339,25 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
               _zoom = 1;
             }),
           ),
+          if (_selection.isNotEmpty)
+            PopupMenuButton<VisualScriptGraphKind>(
+              tooltip: 'Move the selected nodes into a graph of their own',
+              padding: EdgeInsets.zero,
+              icon: const Icon(Icons.compress, size: 15),
+              iconSize: 15,
+              constraints: const BoxConstraints.tightFor(width: 220),
+              onSelected: (kind) => unawaited(_collapseSelection(graph, kind)),
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: VisualScriptGraphKind.function,
+                  child: Text('Collapse to function'),
+                ),
+                const PopupMenuItem(
+                  value: VisualScriptGraphKind.macro,
+                  child: Text('Collapse to macro'),
+                ),
+              ],
+            ),
           IconButton(
             icon: const Icon(Icons.crop_square, size: 15),
             padding: EdgeInsets.zero,
@@ -1109,6 +1385,56 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
   }
 
   Widget _buildCanvas(VisualScriptGraph graph) {
+    // The scripter opens as a full-screen route, on its own Navigator, so it
+    // inherits none of the shell's shortcuts. Without this the canvas has no
+    // keyboard at all — not even Delete.
+    return Shortcuts(
+      shortcuts: <ShortcutActivator, Intent>{
+        const SingleActivator(LogicalKeyboardKey.delete):
+            const _DeleteNodesIntent(),
+        const SingleActivator(LogicalKeyboardKey.backspace):
+            const _DeleteNodesIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyC, meta: true):
+            const _CopyNodesIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyC, control: true):
+            const _CopyNodesIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyV, meta: true):
+            const _PasteNodesIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyV, control: true):
+            const _PasteNodesIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyD, meta: true):
+            const _DuplicateNodesIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyD, control: true):
+            const _DuplicateNodesIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyA, meta: true):
+            const _SelectAllNodesIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyA, control: true):
+            const _SelectAllNodesIntent(),
+      },
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          _DeleteNodesIntent: CallbackAction<_DeleteNodesIntent>(
+            onInvoke: (_) => unawaited(_deleteSelected(graph)),
+          ),
+          _CopyNodesIntent: CallbackAction<_CopyNodesIntent>(
+            onInvoke: (_) => _copySelection(graph),
+          ),
+          _PasteNodesIntent: CallbackAction<_PasteNodesIntent>(
+            onInvoke: (_) => unawaited(_pasteClipboard(graph)),
+          ),
+          _DuplicateNodesIntent: CallbackAction<_DuplicateNodesIntent>(
+            onInvoke: (_) => unawaited(_duplicateSelection(graph)),
+          ),
+          _SelectAllNodesIntent: CallbackAction<_SelectAllNodesIntent>(
+            onInvoke: (_) => _selectAll(graph),
+          ),
+        },
+        child: Focus(autofocus: true, child: _buildCanvasSurface(graph)),
+      ),
+    );
+  }
+
+  Widget _buildCanvasSurface(VisualScriptGraph graph) {
     return Listener(
       onPointerDown: (event) => _onPointerDown(event, graph),
       onPointerMove: (event) => _onPointerMove(event, graph),
@@ -1140,7 +1466,8 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
             registry: _registry,
             pan: _pan,
             zoom: _zoom,
-            selected: _selected,
+            selected: _selection,
+            marquee: _marquee,
             wireFrom: _wireFrom,
             wirePointer: _wirePointer,
             trace: _tracing ? _liveComponent?.trace : null,
@@ -1150,6 +1477,26 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
       ),
     );
   }
+}
+
+class _DeleteNodesIntent extends Intent {
+  const _DeleteNodesIntent();
+}
+
+class _CopyNodesIntent extends Intent {
+  const _CopyNodesIntent();
+}
+
+class _PasteNodesIntent extends Intent {
+  const _PasteNodesIntent();
+}
+
+class _DuplicateNodesIntent extends Intent {
+  const _DuplicateNodesIntent();
+}
+
+class _SelectAllNodesIntent extends Intent {
+  const _SelectAllNodesIntent();
 }
 
 /// A node's visual script component, and which node it is on.
