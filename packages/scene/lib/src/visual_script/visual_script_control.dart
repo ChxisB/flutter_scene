@@ -1013,6 +1013,143 @@ final VisualScriptNodeType gateFlow = VisualScriptNodeType(
 final math.Random _random = math.Random();
 
 // ---------------------------------------------------------------------------
+// Asking what something is.
+// ---------------------------------------------------------------------------
+
+/// The value kinds a Cast node can test for, and what each one accepts.
+///
+/// Not a class hierarchy — a graph's values are the pin types, and this is
+/// the question a graph can actually ask about one it was handed as Any.
+const Map<String, VisualScriptType> castTargets = {
+  'boolean': VisualScriptType.boolean,
+  'number': VisualScriptType.number,
+  'integer': VisualScriptType.integer,
+  'string': VisualScriptType.string,
+  'vector2': VisualScriptType.vector2,
+  'vector3': VisualScriptType.vector3,
+  'vector4': VisualScriptType.vector4,
+  'quaternion': VisualScriptType.quaternion,
+  'list': VisualScriptType.list,
+  'dictionary': VisualScriptType.dictionary,
+};
+
+/// The type a Cast node is testing for.
+/// {@category Visual scripting}
+VisualScriptType castTargetOf(VisualScriptNodeSpec node) =>
+    castTargets['${node.literals['to'] ?? 'number'}'] ??
+    VisualScriptType.number;
+
+/// Whether [value] already is a [type], without converting anything.
+bool _alreadyIs(Object? value, VisualScriptType type) => switch (type) {
+  VisualScriptType.boolean => value is bool,
+  // An integer is a number, which is the same widening a wire allows.
+  VisualScriptType.number => value is num,
+  VisualScriptType.integer => value is int,
+  VisualScriptType.string => value is String,
+  VisualScriptType.list => value is List,
+  VisualScriptType.dictionary => value is Map,
+  _ => false,
+};
+
+final VisualScriptNodeType castTo = VisualScriptNodeType(
+  id: 'flow.castTo',
+  label: 'Cast To',
+  category: 'Flow Control',
+  doc:
+      'Checks what a value actually is. Succeeds with it typed, or fails — '
+      'the node to put in front of anything handed to you as Any.',
+  pins: const [
+    _execIn,
+    VisualScriptPin(id: 'value', label: 'Value', type: VisualScriptType.any),
+    VisualScriptPin(
+      id: 'then',
+      label: 'Success',
+      type: VisualScriptType.exec,
+      isInput: false,
+    ),
+    VisualScriptPin(
+      id: 'failed',
+      label: 'Cast Failed',
+      type: VisualScriptType.exec,
+      isInput: false,
+    ),
+    VisualScriptPin(
+      id: 'out',
+      label: 'As',
+      type: VisualScriptType.any,
+      isInput: false,
+    ),
+  ],
+  pinsFor: (node, context) {
+    final target = castTargetOf(node);
+    return [
+      _execIn,
+      const VisualScriptPin(
+        id: 'value',
+        label: 'Value',
+        type: VisualScriptType.any,
+      ),
+      const VisualScriptPin(
+        id: 'then',
+        label: 'Success',
+        type: VisualScriptType.exec,
+        isInput: false,
+      ),
+      const VisualScriptPin(
+        id: 'failed',
+        label: 'Cast Failed',
+        type: VisualScriptType.exec,
+        isInput: false,
+      ),
+      // The output takes the type being cast to, so what comes out of a
+      // successful cast is wireable as that type rather than as Any again —
+      // which is the entire point of asking.
+      VisualScriptPin(
+        id: 'out',
+        label: target.label,
+        type: target,
+        isInput: false,
+      ),
+    ];
+  },
+  evaluate: (context, node, inputs) {
+    final target = castTargetOf(node);
+    final value = inputs['value'];
+    if (!_alreadyIs(value, target)) {
+      return (outputs: {'out': null}, next: const <String>['failed']);
+    }
+    // Widened rather than handed straight back: an int reaching a Number pin
+    // should arrive as a double, the way every other Number pin gets one.
+    final out = target == VisualScriptType.number ? scriptNumber(value) : value;
+    return (outputs: {'out': out}, next: const <String>['then']);
+  },
+);
+
+final VisualScriptNodeType typeOfValue = VisualScriptNodeType(
+  id: 'flow.typeOf',
+  label: 'Type Of',
+  category: 'Flow Control',
+  doc: 'Names what a value is, for a Switch to branch on.',
+  pins: const [
+    VisualScriptPin(id: 'value', label: 'Value', type: VisualScriptType.any),
+    VisualScriptPin(
+      id: 'out',
+      label: 'Type',
+      type: VisualScriptType.string,
+      isInput: false,
+    ),
+  ],
+  evaluate: (context, node, inputs) {
+    for (final entry in castTargets.entries) {
+      if (_alreadyIs(inputs['value'], entry.value)) {
+        return _out({'out': entry.key});
+      }
+    }
+    return _out({'out': inputs['value'] == null ? 'nothing' : 'other'});
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Tidiness.
 // ---------------------------------------------------------------------------
 
@@ -1048,7 +1185,9 @@ final VisualScriptNodeType rerouteExec = VisualScriptNodeType(
 /// {@category Visual scripting}
 final List<VisualScriptNodeType> controlVisualScriptNodes = [
   breakLoop,
+  castTo,
   doN,
+  typeOfValue,
   reroute,
   rerouteExec,
   flipFlop,

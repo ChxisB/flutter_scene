@@ -43,6 +43,9 @@ export 'src/visual_script/visual_script_control.dart'
         breakLoop,
         cacheValue,
         casePin,
+        castTargetOf,
+        castTargets,
+        castTo,
         casesOf,
         controlVisualScriptNodes,
         doN,
@@ -67,6 +70,7 @@ export 'src/visual_script/visual_script_control.dart'
         toggleFlow,
         toggleValue,
         tryCatch,
+        typeOfValue,
         whileLoop;
 export 'src/visual_script/visual_script_data.dart'
     show

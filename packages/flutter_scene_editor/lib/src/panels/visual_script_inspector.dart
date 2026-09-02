@@ -91,6 +91,18 @@ final Map<String, List<VisualScriptSetting>> visualScriptSettings = {
   'flow.select': const [_casesSetting],
   'var.get': [_scopeSetting],
   'var.set': [_scopeSetting],
+  'flow.castTo': [
+    VisualScriptSetting(
+      key: 'to',
+      label: 'To',
+      type: VisualScriptType.string,
+      doc:
+          'What to check the value is. A cast that does not match takes the '
+          'Cast Failed path rather than converting.',
+      options: castTargets.keys.toList(),
+      defaultValue: 'number',
+    ),
+  ],
   'flow.multiGate': const [
     VisualScriptSetting(
       key: 'count',

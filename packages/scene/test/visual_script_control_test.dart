@@ -489,6 +489,76 @@ void main() {
     });
   });
 
+  group('asking what a value is', () {
+    /// Runs a Cast To on [value] and reports which branch it took.
+    String castOf(Object? value, String to) {
+      final r = rig();
+      final tick = r.graph.add('event.tick');
+      final cast = r.graph.add('flow.castTo')
+        ..literals['value'] = value
+        ..literals['to'] = to;
+      final ok = r.graph.add('debug.print')..literals['label'] = 'ok';
+      final no = r.graph.add('debug.print')..literals['value'] = 'failed';
+      r.graph
+        ..wire(tick, 'then', cast, 'exec')
+        ..wire(cast, 'then', ok, 'exec')
+        ..wire(cast, 'out', ok, 'value')
+        ..wire(cast, 'failed', no, 'exec');
+      VisualScriptInterpreter(
+        standardVisualScriptRegistry(),
+      ).fire(VisualScriptContext(graph: r.graph, host: r.host), onTick.id);
+      return r.host.messages.single;
+    }
+
+    test('a cast that matches succeeds and hands the value on', () {
+      expect(castOf('hello', 'string'), 'ok: hello');
+    });
+
+    test('a cast that does not match fails rather than converting', () {
+      // The whole point: a Number pin fed a string should not quietly get 0.
+      expect(castOf('hello', 'number'), 'failed');
+    });
+
+    test('an integer is a number, the same widening a wire allows', () {
+      expect(castOf(3, 'number'), 'ok: 3.0');
+    });
+
+    test('but a number is not an integer', () {
+      expect(castOf(3.5, 'integer'), 'failed');
+    });
+
+    test('nothing casts to nothing', () {
+      expect(castOf(null, 'string'), 'failed');
+    });
+
+    test('the output pin takes the type being cast to', () {
+      // So a successful cast is wireable as that type rather than as Any.
+      final graph = VisualScriptGraph();
+      final cast = graph.add('flow.castTo')..literals['to'] = 'vector3';
+      final type = standardVisualScriptRegistry()['flow.castTo']!;
+      expect(type.pinOf(cast, 'out')?.type, VisualScriptType.vector3);
+    });
+
+    test('Type Of names what a value is, for a Switch to branch on', () {
+      final r = rig();
+      final context = VisualScriptContext(graph: r.graph, host: r.host);
+      final runner = VisualScriptInterpreter(standardVisualScriptRegistry());
+      for (final (value, expected) in <(Object?, String)>[
+        (true, 'boolean'),
+        ('x', 'string'),
+        (<Object?>[], 'list'),
+        (null, 'nothing'),
+      ]) {
+        final node = r.graph.add('flow.typeOf')..literals['value'] = value;
+        expect(
+          runner.evaluateOutput(context, node.id, 'out'),
+          expected,
+          reason: '$value',
+        );
+      }
+    });
+  });
+
   group('what an exec node produces', () {
     test('reading an exec node twice does not run it twice', () {
       // Play Animation asked for Found must not play the animation again.
