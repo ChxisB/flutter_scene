@@ -70,10 +70,16 @@ class VisualScriptLayout {
   /// pins come from one. Null when nothing on this canvas nests.
   final VisualScriptGraphLookup? graphs;
 
+  /// What a node on this canvas takes its shape from: the graph it is in, and
+  /// how to find one it names.
+  VisualScriptShapeContext get shape =>
+      VisualScriptShapeContext(graph: graph, graphs: graphs);
+
   /// The pins [node] has — which is a question about the node, not its type:
-  /// a Switch has an output per case and a Sequence as many as it was given.
+  /// a Switch has an output per case, a Sequence as many as it was given, and
+  /// a Call Function whatever the graph it names declares.
   List<VisualScriptPin> pinsOf(VisualScriptNodeSpec node) =>
-      registry[node.type]?.pinsOf(node, graphs) ?? const [];
+      registry[node.type]?.pinsOf(node, shape) ?? const [];
 
   Iterable<VisualScriptPin> inputsOf(VisualScriptNodeSpec node) =>
       pinsOf(node).where((pin) => pin.isInput);
@@ -109,7 +115,7 @@ class VisualScriptLayout {
     if (node == null) return null;
     final type = registry[node.type];
     if (type == null) return null;
-    final pin = type.pinOf(node, pinId, graphs);
+    final pin = type.pinOf(node, pinId, shape);
     if (pin == null) return null;
     final column = pin.isInput ? inputsOf(node) : outputsOf(node);
     final index = column.toList().indexWhere((p) => p.id == pinId);
@@ -221,7 +227,7 @@ class VisualScriptLayout {
   bool _isExecLink(VisualScriptLink link) {
     final node = graph.node(link.fromNode);
     if (node == null) return false;
-    return registry[node.type]?.pinOf(node, link.fromPin, graphs)?.type ==
+    return registry[node.type]?.pinOf(node, link.fromPin, shape)?.type ==
         VisualScriptType.exec;
   }
 
@@ -235,7 +241,7 @@ class VisualScriptLayout {
   VisualScriptType? typeOf(VisualScriptPortRef port) {
     final node = graph.node(port.node);
     if (node == null) return null;
-    return registry[node.type]?.pinOf(node, port.pin, graphs)?.type;
+    return registry[node.type]?.pinOf(node, port.pin, shape)?.type;
   }
 
   /// The pin nearest [at] that a wire from [from] could actually land on.
@@ -368,7 +374,7 @@ class VisualScriptCanvasPainter extends CustomPainter {
   VisualScriptType _typeColorType(int nodeId, String pinId) {
     final node = graph.node(nodeId);
     if (node == null) return VisualScriptType.any;
-    return registry[node.type]?.pinOf(node, pinId, graphs)?.type ??
+    return registry[node.type]?.pinOf(node, pinId, layout.shape)?.type ??
         VisualScriptType.any;
   }
 

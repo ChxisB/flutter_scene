@@ -34,6 +34,7 @@ class VisualScriptSetting {
     required this.type,
     this.doc = '',
     this.options = const [],
+    this.optionsFrom,
     this.defaultValue,
   });
 
@@ -52,6 +53,10 @@ class VisualScriptSetting {
   /// When non-empty, the setting is a choice between these rather than free
   /// text — the value written is the option itself.
   final List<String> options;
+
+  /// Where the choices come from, when they depend on the blueprint rather
+  /// than being the same everywhere.
+  final VisualScriptSettingOptions? optionsFrom;
 
   /// What the row shows when nothing has been written yet.
   final Object? defaultValue;
@@ -85,6 +90,26 @@ final Map<String, List<VisualScriptSetting>> visualScriptSettings = {
   'flow.select': const [_casesSetting],
   'var.get': [_scopeSetting],
   'var.set': [_scopeSetting],
+  'flow.multiGate': const [
+    VisualScriptSetting(
+      key: 'count',
+      label: 'Outputs',
+      type: VisualScriptType.integer,
+      defaultValue: 2,
+      doc: 'How many ways the pulse can go.',
+    ),
+  ],
+  'function.call': const [
+    VisualScriptSetting(
+      key: calledGraphKey,
+      label: 'Function',
+      type: VisualScriptType.string,
+      doc:
+          'Which graph in this blueprint to call. Its parameters and '
+          'results become this node\'s pins.',
+      optionsFrom: VisualScriptSettingOptions.callableGraphs,
+    ),
+  ],
 };
 
 const VisualScriptSetting _casesSetting = VisualScriptSetting(
@@ -103,6 +128,12 @@ final VisualScriptSetting _scopeSetting = VisualScriptSetting(
   defaultValue: VisualScriptVariableScope.graph.name,
 );
 
+/// A set of choices the editor has to look up rather than know.
+enum VisualScriptSettingOptions {
+  /// Every function and macro in the blueprint being edited.
+  callableGraphs,
+}
+
 /// Edits one node's values, or says what to do when none is selected.
 class VisualScriptInspector extends StatelessWidget {
   const VisualScriptInspector({
@@ -112,6 +143,7 @@ class VisualScriptInspector extends StatelessWidget {
     required this.node,
     required this.onChanged,
     this.graphs,
+    this.callableGraphs = const [],
   });
 
   final VisualScriptGraph graph;
@@ -123,9 +155,23 @@ class VisualScriptInspector extends StatelessWidget {
   /// How a nesting node finds the graph it names.
   final VisualScriptGraphLookup? graphs;
 
+  /// The functions and macros a Call node in this blueprint could name.
+  final List<String> callableGraphs;
+
+  /// What the selected node takes its shape from.
+  VisualScriptShapeContext get _shape =>
+      VisualScriptShapeContext(graph: graph, graphs: graphs);
+
   /// Called with the literal key and its new value. A null value clears it
   /// back to the pin's own default.
   final void Function(String key, Object? value) onChanged;
+
+  /// The choices [setting] offers here, looked up when it does not carry them.
+  List<String> _optionsFor(VisualScriptSetting setting) =>
+      switch (setting.optionsFrom) {
+        VisualScriptSettingOptions.callableGraphs => callableGraphs,
+        null => setting.options,
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -138,13 +184,13 @@ class VisualScriptInspector extends StatelessWidget {
     // Only unwired inputs: a pin with a wire on it takes its value from the
     // wire, and offering a box that does nothing is worse than offering none.
     final editable = [
-      for (final pin in type.inputsOf(selected, graphs))
+      for (final pin in type.inputsOf(selected, _shape))
         if (pin.type != VisualScriptType.exec &&
             graph.inputTo(selected.id, pin.id) == null)
           pin,
     ];
     final wired = [
-      for (final pin in type.inputsOf(selected, graphs))
+      for (final pin in type.inputsOf(selected, _shape))
         if (pin.type != VisualScriptType.exec &&
             graph.inputTo(selected.id, pin.id) != null)
           pin,
@@ -164,6 +210,7 @@ class VisualScriptInspector extends StatelessWidget {
           for (final setting in settings)
             _SettingRow(
               setting: setting,
+              options: _optionsFor(setting),
               value: selected.literals[setting.key] ?? setting.defaultValue,
               onChanged: (value) => onChanged(setting.key, value),
             ),
@@ -215,11 +262,15 @@ class _SettingRow extends StatelessWidget {
     required this.setting,
     required this.value,
     required this.onChanged,
+    this.options = const [],
   });
 
   final VisualScriptSetting setting;
   final Object? value;
   final ValueChanged<Object?> onChanged;
+
+  /// The choices to offer, already looked up. Empty means free text.
+  final List<String> options;
 
   @override
   Widget build(BuildContext context) {
@@ -242,17 +293,22 @@ class _SettingRow extends StatelessWidget {
   };
 
   Widget _field() {
-    if (setting.options.isNotEmpty) {
+    final choices = options.isEmpty ? setting.options : options;
+    if (choices.isNotEmpty) {
       return EditorDropdown<String>(
-        value: setting.options.contains('$value')
-            ? '$value'
-            : setting.options.first,
+        value: choices.contains('$value') ? '$value' : choices.first,
         items: [
-          for (final option in setting.options)
+          for (final option in choices)
             DropdownMenuItem(value: option, child: Text(option)),
         ],
         onChanged: (picked) => onChanged(picked),
       );
+    }
+    // A setting that should be a choice but has nothing to choose from — a
+    // Call node in a blueprint with no functions yet — says so rather than
+    // offering an empty menu.
+    if (setting.optionsFrom != null) {
+      return Text('Nothing to choose yet', style: editorMicroText);
     }
     return switch (setting.type) {
       VisualScriptType.boolean => _BoolField(

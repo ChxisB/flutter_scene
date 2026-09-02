@@ -249,7 +249,7 @@ final VisualScriptNodeType makeList = VisualScriptNodeType(
     _in('2', 'Item 2', VisualScriptType.any),
     _outPin('value', 'Value', VisualScriptType.list),
   ],
-  pinsFor: (node, graphs) {
+  pinsFor: (node, context) {
     final count = scriptInteger(node.literals['count'], 3).clamp(1, 32);
     return [
       for (var i = 0; i < count; i++)

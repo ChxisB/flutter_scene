@@ -150,6 +150,39 @@ void main() {
       );
     });
 
+    testWidgets('a Call node offers the blueprint\'s functions', (
+      tester,
+    ) async {
+      final graph = VisualScriptGraph();
+      final node = graph.add('function.call');
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 260,
+              height: 600,
+              child: VisualScriptInspector(
+                graph: graph,
+                registry: registry,
+                node: node,
+                callableGraphs: const ['Double', 'Stamp'],
+                onChanged: (_, _) {},
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(find.text('Function'), findsOneWidget);
+      expect(find.text('Double'), findsWidgets);
+    });
+
+    testWidgets('and says so when there are none yet', (tester) async {
+      final graph = VisualScriptGraph();
+      final node = graph.add('function.call');
+      await showInspector(tester, graph, node);
+      expect(find.textContaining('Nothing to choose'), findsOneWidget);
+    });
+
     testWidgets('an unknown node type says so rather than showing nothing', (
       tester,
     ) async {

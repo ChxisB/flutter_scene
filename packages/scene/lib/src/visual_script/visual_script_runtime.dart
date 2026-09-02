@@ -114,15 +114,6 @@ class NullVisualScriptHost extends VisualScriptHost {
   void log(String message) => messages.add(message);
 }
 
-/// Finds a graph a node names, for the node types whose shape or behaviour
-/// comes from another graph — a Subgraph, a state's transition.
-///
-/// [Blueprint.graph] has this signature and tears off directly, which is why
-/// this is a function rather than an interface the runtime would have to
-/// import a blueprint to satisfy.
-/// {@category Visual scripting}
-typedef VisualScriptGraphLookup = VisualScriptGraph? Function(String name);
-
 /// Control flow travelling outward past the node that raised it: a Break
 /// leaving a loop, a Throw looking for a Try.
 ///
@@ -221,6 +212,30 @@ abstract class VisualScriptFlow {
     int nodeId,
     String pinId,
   );
+
+  /// Calls [graph] with [arguments] and returns what it handed back.
+  ///
+  /// A frame of its own, so the call's Local variables and its nodes' scratch
+  /// belong to the call rather than to whoever happened to make it.
+  VisualScriptCallResult callGraph(
+    VisualScriptContext context,
+    VisualScriptNodeSpec caller,
+    VisualScriptGraph graph, {
+    Map<String, Object?> arguments = const {},
+  });
+
+  /// Runs [graph] in the *caller's* frame, which is what a macro is.
+  ///
+  /// A macro is pasted in rather than called, so it shares the caller's
+  /// scratch and its Local variables are the caller's. Node ids still collide
+  /// between the two graphs, so the scratch is keyed by call site all the
+  /// same — what is shared is the variables, not the bookkeeping.
+  VisualScriptCallResult runInline(
+    VisualScriptContext context,
+    VisualScriptNodeSpec caller,
+    VisualScriptGraph graph, {
+    Map<String, Object?> arguments = const {},
+  });
 }
 
 /// One graph on the call stack: what the run is walking, and the scratch its
@@ -260,7 +275,24 @@ class VisualScriptFrame {
   /// `'/12/4'`. Two Subgraph nodes wrapping the same graph get different
   /// paths, so each keeps its own scratch.
   final String path;
+
+  /// What the caller passed in, keyed by parameter id. The entry node hands
+  /// these to the wires.
+  final Map<String, Object?> arguments = {};
+
+  /// What a Return put back, for the caller to read.
+  final Map<String, Object?> results = {};
+
+  /// Variables belonging to this call and discarded with it.
+  final Map<String, Object?> locals = {};
 }
+
+/// How a call ended, and what it handed back.
+/// {@category Visual scripting}
+typedef VisualScriptCallResult = ({
+  VisualScriptFlowStatus status,
+  Map<String, Object?> results,
+});
 
 /// The state one run of a graph carries.
 /// {@category Visual scripting}
@@ -299,6 +331,10 @@ class VisualScriptContext {
 
   /// How to find a graph a node names, or null when nothing nests.
   final VisualScriptGraphLookup? graphs;
+
+  /// What the running frame's nodes take their shape from.
+  VisualScriptShapeContext get shape =>
+      VisualScriptShapeContext(graph: graph, graphs: graphs);
 
   /// Where to record what the run did, or null to record nothing.
   ///
@@ -346,6 +382,12 @@ class VisualScriptContext {
   /// What each exec node in the running frame last produced.
   Map<int, Map<String, Object?>> get execOutputs => _frames.last.execOutputs;
 
+  /// What the running call was passed.
+  Map<String, Object?> get arguments => _frames.last.arguments;
+
+  /// Where the running call puts what it hands back.
+  Map<String, Object?> get results => _frames.last.results;
+
   /// The variables one run of one flow has, cleared when that run ends.
   ///
   /// These are never declared: a Set node in flow scope creates one, and
@@ -360,6 +402,9 @@ class VisualScriptContext {
   Map<String, Object?> variablesIn(VisualScriptVariableScope scope) =>
       switch (scope) {
         VisualScriptVariableScope.flow => flowVariables,
+        // The running call's own scratch. In the root frame there is no call,
+        // so a Local behaves as a Flow variable rather than vanishing.
+        VisualScriptVariableScope.local => _frames.last.locals,
         VisualScriptVariableScope.graph => variables,
         _ => host.variablesIn(scope),
       };
@@ -381,22 +426,21 @@ class VisualScriptContext {
 
   /// Pushes a frame for [graph], called from [nodeId], and returns whether
   /// there was room. Sets [error] and returns false when there was not.
-  bool pushFrame(VisualScriptGraph graph, int nodeId) {
+  VisualScriptFrame? pushFrame(VisualScriptGraph graph, int nodeId) {
     if (_frames.length >= maxDepth) {
       error =
           'Graphs are nested $maxDepth deep here, which is either a very '
-          'deep subgraph or one that contains itself.';
-      return false;
+          'deep call chain or a graph that calls itself.';
+      return null;
     }
     final path = '${_frames.last.path}/$nodeId';
-    _frames.add(
-      VisualScriptFrame(
-        graph: graph,
-        nodeState: _stateByPath.putIfAbsent(path, () => {}),
-        path: path,
-      ),
+    final frame = VisualScriptFrame(
+      graph: graph,
+      nodeState: _stateByPath.putIfAbsent(path, () => {}),
+      path: path,
     );
-    return true;
+    _frames.add(frame);
+    return frame;
   }
 
   /// Pops the frame [pushFrame] pushed. Never pops the root.
@@ -505,11 +549,15 @@ class VisualScriptNodeType {
   /// none of which can be written as a list on the type. [graphs] is how the
   /// last of those finds the graph it names.
   ///
+  /// [context] carries both the graph the node is in — which is what an entry
+  /// node's parameters come from — and how to find a graph it names, which is
+  /// what a call node's come from.
+  ///
   /// Generated pin ids must match `[A-Za-z0-9_]+`: the text format writes
   /// them unquoted on both sides of a wire.
   final List<VisualScriptPin> Function(
     VisualScriptNodeSpec node,
-    VisualScriptGraphLookup? graphs,
+    VisualScriptShapeContext context,
   )?
   pinsFor;
 
@@ -525,25 +573,25 @@ class VisualScriptNodeType {
   /// The pins [node] has, asking [pinsFor] when there is one.
   List<VisualScriptPin> pinsOf(
     VisualScriptNodeSpec node, [
-    VisualScriptGraphLookup? graphs,
-  ]) => pinsFor?.call(node, graphs) ?? pins;
+    VisualScriptShapeContext context = VisualScriptShapeContext.none,
+  ]) => pinsFor?.call(node, context) ?? pins;
 
   Iterable<VisualScriptPin> inputsOf(
     VisualScriptNodeSpec node, [
-    VisualScriptGraphLookup? graphs,
-  ]) => pinsOf(node, graphs).where((pin) => pin.isInput);
+    VisualScriptShapeContext context = VisualScriptShapeContext.none,
+  ]) => pinsOf(node, context).where((pin) => pin.isInput);
 
   Iterable<VisualScriptPin> outputsOf(
     VisualScriptNodeSpec node, [
-    VisualScriptGraphLookup? graphs,
-  ]) => pinsOf(node, graphs).where((pin) => !pin.isInput);
+    VisualScriptShapeContext context = VisualScriptShapeContext.none,
+  ]) => pinsOf(node, context).where((pin) => !pin.isInput);
 
   VisualScriptPin? pinOf(
     VisualScriptNodeSpec node,
     String id, [
-    VisualScriptGraphLookup? graphs,
+    VisualScriptShapeContext context = VisualScriptShapeContext.none,
   ]) {
-    for (final pin in pinsOf(node, graphs)) {
+    for (final pin in pinsOf(node, context)) {
       if (pin.id == id) return pin;
     }
     return null;
@@ -569,8 +617,8 @@ class VisualScriptNodeType {
   /// pure data and is evaluated on demand.
   bool isExecDriven(
     VisualScriptNodeSpec node, [
-    VisualScriptGraphLookup? graphs,
-  ]) => pinsOf(node, graphs).any((pin) => pin.type == VisualScriptType.exec);
+    VisualScriptShapeContext context = VisualScriptShapeContext.none,
+  ]) => pinsOf(node, context).any((pin) => pin.type == VisualScriptType.exec);
 }
 
 /// The node types a graph may use.
@@ -675,13 +723,102 @@ class VisualScriptInterpreter implements VisualScriptFlow {
       evaluateOutput(context, nodeId, pinId);
 
   @override
+  VisualScriptCallResult callGraph(
+    VisualScriptContext context,
+    VisualScriptNodeSpec caller,
+    VisualScriptGraph graph, {
+    Map<String, Object?> arguments = const {},
+  }) {
+    final frame = context.pushFrame(graph, caller.id);
+    if (frame == null) {
+      return (
+        status: VisualScriptFlowStatus.failed,
+        results: const <String, Object?>{},
+      );
+    }
+    // A call starts from what it was given, not from what the last call to
+    // the same graph left behind.
+    frame.arguments
+      ..clear()
+      ..addAll(arguments);
+    frame.results.clear();
+    frame.locals.clear();
+    try {
+      return (
+        status: _runEntry(context, graph),
+        results: Map.of(frame.results),
+      );
+    } finally {
+      context.popFrame();
+    }
+  }
+
+  @override
+  VisualScriptCallResult runInline(
+    VisualScriptContext context,
+    VisualScriptNodeSpec caller,
+    VisualScriptGraph graph, {
+    Map<String, Object?> arguments = const {},
+  }) {
+    // A macro still needs a frame — node ids collide between two graphs, and
+    // sharing one would have the macro's node 3 reading the caller's. What it
+    // shares is the variables, which is what "pasted in" means: Flow and
+    // Graph scope both reach past a frame already, and Local is the only one
+    // a macro should not have of its own.
+    final frame = context.pushFrame(graph, caller.id);
+    if (frame == null) {
+      return (
+        status: VisualScriptFlowStatus.failed,
+        results: const <String, Object?>{},
+      );
+    }
+    frame.arguments
+      ..clear()
+      ..addAll(arguments);
+    frame.results.clear();
+    try {
+      return (
+        status: _runEntry(context, graph),
+        results: Map.of(frame.results),
+      );
+    } finally {
+      context.popFrame();
+    }
+  }
+
+  /// Runs [graph] from its entry node, in whatever frame is current.
+  VisualScriptFlowStatus _runEntry(
+    VisualScriptContext context,
+    VisualScriptGraph graph,
+  ) {
+    var status = VisualScriptFlowStatus.completed;
+    var entered = false;
+    for (final node in graph.nodes) {
+      if (node.type != functionEntryType) continue;
+      entered = true;
+      status = _run(context, node);
+      if (status != VisualScriptFlowStatus.completed) break;
+    }
+    // A graph with no entry node runs nothing and says nothing: it is an
+    // empty function, which is a legitimate thing to have written half of.
+    if (!entered) return VisualScriptFlowStatus.completed;
+    return status;
+  }
+
+  /// The node type an entry node has.
+  ///
+  /// Named here rather than imported, because the functions library imports
+  /// this one and the dependency cannot go both ways.
+  static const String functionEntryType = 'function.entry';
+
+  @override
   VisualScriptFlowStatus runGraph(
     VisualScriptContext context,
     VisualScriptNodeSpec caller,
     VisualScriptGraph graph, {
     String entry = 'event.start',
   }) {
-    if (!context.pushFrame(graph, caller.id)) {
+    if (context.pushFrame(graph, caller.id) == null) {
       return VisualScriptFlowStatus.failed;
     }
     try {
@@ -705,7 +842,7 @@ class VisualScriptInterpreter implements VisualScriptFlow {
     int nodeId,
     String pinId,
   ) {
-    if (!context.pushFrame(graph, caller.id)) return null;
+    if (context.pushFrame(graph, caller.id) == null) return null;
     try {
       return evaluateOutput(context, nodeId, pinId);
     } finally {
@@ -805,7 +942,7 @@ class VisualScriptInterpreter implements VisualScriptFlow {
     VisualScriptNodeType type,
   ) {
     final values = <String, Object?>{};
-    for (final pin in type.inputsOf(node, context.graphs)) {
+    for (final pin in type.inputsOf(node, context.shape)) {
       if (pin.type == VisualScriptType.exec) continue;
       final link = context.graph.inputTo(node.id, pin.id);
       if (link != null) {
@@ -858,7 +995,7 @@ class VisualScriptInterpreter implements VisualScriptFlow {
       // here instead would play the animation a second time, or restart the
       // loop whose index was being read. A node that has not run yet has no
       // value to give, and null is the honest answer.
-      if (type.isExecDriven(node, context.graphs)) {
+      if (type.isExecDriven(node, context.shape)) {
         return context.execOutputs[nodeId]?[pinId];
       }
       final inputs = _resolveInputs(context, node, type);

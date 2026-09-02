@@ -758,6 +758,13 @@ class _VisualScripterPanelState extends State<VisualScripterPanel> {
                         registry: _registry,
                         node: _selected == null ? null : graph.node(_selected!),
                         graphs: blueprint.graph,
+                        callableGraphs: [
+                          for (final candidate in blueprint.graphs)
+                            if (candidate.kind ==
+                                    VisualScriptGraphKind.function ||
+                                candidate.kind == VisualScriptGraphKind.macro)
+                              candidate.name,
+                        ],
                         onChanged: (key, value) =>
                             unawaited(_setLiteral(graph, key, value)),
                       ),

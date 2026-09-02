@@ -11,6 +11,8 @@
 /// those declare `pinsFor` instead of a fixed pin list.
 library;
 
+import 'dart:math' as math;
+
 import 'visual_script_graph.dart';
 import 'visual_script_runtime.dart';
 
@@ -393,8 +395,7 @@ List<Object?> casesOf(VisualScriptNodeSpec node) =>
 String casePin(int index) => 'case_$index';
 
 List<VisualScriptPin> _switchPins(
-  VisualScriptNodeSpec node,
-  VisualScriptGraphLookup? graphs, {
+  VisualScriptNodeSpec node, {
   required VisualScriptType selector,
 }) {
   final cases = casesOf(node);
@@ -440,8 +441,8 @@ final VisualScriptNodeType switchOnString = VisualScriptNodeType(
       isInput: false,
     ),
   ],
-  pinsFor: (node, graphs) =>
-      _switchPins(node, graphs, selector: VisualScriptType.string),
+  pinsFor: (node, context) =>
+      _switchPins(node, selector: VisualScriptType.string),
   evaluate: (context, node, inputs) =>
       _switch(context, node, inputs, scriptString),
 );
@@ -465,8 +466,8 @@ final VisualScriptNodeType switchOnInteger = VisualScriptNodeType(
       isInput: false,
     ),
   ],
-  pinsFor: (node, graphs) =>
-      _switchPins(node, graphs, selector: VisualScriptType.integer),
+  pinsFor: (node, context) =>
+      _switchPins(node, selector: VisualScriptType.integer),
   evaluate: (context, node, inputs) =>
       _switch(context, node, inputs, (value) => '${scriptInteger(value)}'),
 );
@@ -496,7 +497,7 @@ final VisualScriptNodeType selectValue = VisualScriptNodeType(
       isInput: false,
     ),
   ],
-  pinsFor: (node, graphs) {
+  pinsFor: (node, context) {
     final cases = casesOf(node);
     return [
       const VisualScriptPin(
@@ -740,10 +741,286 @@ final VisualScriptNodeType nullCoalesce = VisualScriptNodeType(
       _out({'result': inputs['value'] ?? inputs['fallback']}),
 );
 
+// ---------------------------------------------------------------------------
+// The gates and counters a graph reaches for when "once" is not enough.
+// ---------------------------------------------------------------------------
+
+final VisualScriptNodeType doN = VisualScriptNodeType(
+  id: 'flow.doN',
+  label: 'Do N',
+  category: 'Flow Control',
+  doc:
+      'Passes through the first N times it is reached, and not again until '
+      'Reset. Counter says how many have gone through.',
+  pins: const [
+    VisualScriptPin(id: 'exec', label: 'Enter', type: VisualScriptType.exec),
+    VisualScriptPin(id: 'reset', label: 'Reset', type: VisualScriptType.exec),
+    VisualScriptPin(
+      id: 'n',
+      label: 'N',
+      type: VisualScriptType.integer,
+      defaultValue: 1,
+    ),
+    VisualScriptPin(
+      id: 'then',
+      label: 'Exit',
+      type: VisualScriptType.exec,
+      isInput: false,
+    ),
+    VisualScriptPin(
+      id: 'counter',
+      label: 'Counter',
+      type: VisualScriptType.integer,
+      isInput: false,
+    ),
+  ],
+  evaluate: (context, node, inputs) {
+    if (context.enteredPin == 'reset') {
+      context.nodeState[node.id] = 0;
+      return _out({'counter': 0});
+    }
+    final done = context.nodeState[node.id] as int? ?? 0;
+    if (done >= scriptInteger(inputs['n'], 1)) return _out({'counter': done});
+    context.nodeState[node.id] = done + 1;
+    return (outputs: {'counter': done + 1}, next: const <String>['then']);
+  },
+);
+
+final VisualScriptNodeType flipFlop = VisualScriptNodeType(
+  id: 'flow.flipFlop',
+  label: 'Flip Flop',
+  category: 'Flow Control',
+  doc: 'Takes A, then B, then A again — alternating every time it is reached.',
+  pins: const [
+    _execIn,
+    VisualScriptPin(
+      id: 'a',
+      label: 'A',
+      type: VisualScriptType.exec,
+      isInput: false,
+    ),
+    VisualScriptPin(
+      id: 'b',
+      label: 'B',
+      type: VisualScriptType.exec,
+      isInput: false,
+    ),
+    VisualScriptPin(
+      id: 'isA',
+      label: 'Is A',
+      type: VisualScriptType.boolean,
+      isInput: false,
+    ),
+  ],
+  evaluate: (context, node, inputs) {
+    final takeA = context.nodeState[node.id] != true;
+    context.nodeState[node.id] = takeA;
+    return (outputs: {'isA': takeA}, next: <String>[takeA ? 'a' : 'b']);
+  },
+);
+
+final VisualScriptNodeType multiGate = VisualScriptNodeType(
+  id: 'flow.multiGate',
+  label: 'Multi Gate',
+  category: 'Flow Control',
+  doc:
+      'Sends each pulse out of a different output — in order, or at random, '
+      'and optionally looping back to the first once they have all been used.',
+  pins: const [
+    VisualScriptPin(id: 'exec', label: 'Enter', type: VisualScriptType.exec),
+    VisualScriptPin(id: 'reset', label: 'Reset', type: VisualScriptType.exec),
+    VisualScriptPin(
+      id: 'random',
+      label: 'Is Random',
+      type: VisualScriptType.boolean,
+      defaultValue: false,
+    ),
+    VisualScriptPin(
+      id: 'loop',
+      label: 'Loop',
+      type: VisualScriptType.boolean,
+      defaultValue: false,
+      doc: 'Whether it starts over once every output has been used.',
+    ),
+    VisualScriptPin(
+      id: 'out_0',
+      label: 'Out 0',
+      type: VisualScriptType.exec,
+      isInput: false,
+    ),
+    VisualScriptPin(
+      id: 'out_1',
+      label: 'Out 1',
+      type: VisualScriptType.exec,
+      isInput: false,
+    ),
+  ],
+  pinsFor: (node, context) {
+    final count = multiGateCountOf(node);
+    return [
+      const VisualScriptPin(
+        id: 'exec',
+        label: 'Enter',
+        type: VisualScriptType.exec,
+      ),
+      const VisualScriptPin(
+        id: 'reset',
+        label: 'Reset',
+        type: VisualScriptType.exec,
+      ),
+      const VisualScriptPin(
+        id: 'random',
+        label: 'Is Random',
+        type: VisualScriptType.boolean,
+        defaultValue: false,
+      ),
+      const VisualScriptPin(
+        id: 'loop',
+        label: 'Loop',
+        type: VisualScriptType.boolean,
+        defaultValue: false,
+      ),
+      for (var i = 0; i < count; i++)
+        VisualScriptPin(
+          id: multiGatePin(i),
+          label: 'Out $i',
+          type: VisualScriptType.exec,
+          isInput: false,
+        ),
+    ];
+  },
+  evaluate: (context, node, inputs) {
+    final count = multiGateCountOf(node);
+    // Which outputs are spent, as a set rather than a counter, because the
+    // random order has to remember what it has already used.
+    final used = (context.nodeState[node.id] as Set<int>?) ?? <int>{};
+    if (context.enteredPin == 'reset') {
+      context.nodeState[node.id] = <int>{};
+      return _stop();
+    }
+    if (used.length >= count) {
+      if (!scriptBool(inputs['loop'])) return _stop();
+      used.clear();
+    }
+    final remaining = [
+      for (var i = 0; i < count; i++)
+        if (!used.contains(i)) i,
+    ];
+    final picked = scriptBool(inputs['random'])
+        ? remaining[_random.nextInt(remaining.length)]
+        : remaining.first;
+    used.add(picked);
+    context.nodeState[node.id] = used;
+    return _then(multiGatePin(picked));
+  },
+);
+
+/// How many outputs a Multi Gate has. Two unless it was told otherwise.
+/// {@category Visual scripting}
+int multiGateCountOf(VisualScriptNodeSpec node) =>
+    scriptInteger(node.literals['count'], 2).clamp(1, 32);
+
+/// The pin id for a Multi Gate's output [index].
+/// {@category Visual scripting}
+String multiGatePin(int index) => 'out_$index';
+
+final VisualScriptNodeType isValid = VisualScriptNodeType(
+  id: 'flow.isValid',
+  label: 'Is Valid',
+  category: 'Flow Control',
+  doc:
+      'Takes one path when there is something, and the other when there is '
+      'not. The check to put in front of anything that might be missing.',
+  pins: const [
+    _execIn,
+    VisualScriptPin(
+      id: 'value',
+      label: 'Input Object',
+      type: VisualScriptType.any,
+    ),
+    VisualScriptPin(
+      id: 'valid',
+      label: 'Is Valid',
+      type: VisualScriptType.exec,
+      isInput: false,
+    ),
+    VisualScriptPin(
+      id: 'invalid',
+      label: 'Is Not Valid',
+      type: VisualScriptType.exec,
+      isInput: false,
+    ),
+  ],
+  evaluate: (context, node, inputs) {
+    final value = inputs['value'];
+    // Empty text and an empty collection are "nothing" too: a name nobody set
+    // and a list nobody filled are both the case this node exists to catch.
+    final valid = switch (value) {
+      null => false,
+      String v => v.isNotEmpty,
+      List<Object?> v => v.isNotEmpty,
+      Map<Object?, Object?> v => v.isNotEmpty,
+      _ => true,
+    };
+    return _then(valid ? 'valid' : 'invalid');
+  },
+);
+
+final VisualScriptNodeType gateFlow = VisualScriptNodeType(
+  id: 'flow.gateFlow',
+  label: 'Gate',
+  category: 'Flow Control',
+  doc:
+      'A valve on a stream of control. Enter passes through only while the '
+      'gate is open; Open, Close and Toggle work it from elsewhere in the '
+      'graph.',
+  pins: const [
+    VisualScriptPin(id: 'exec', label: 'Enter', type: VisualScriptType.exec),
+    VisualScriptPin(id: 'open', label: 'Open', type: VisualScriptType.exec),
+    VisualScriptPin(id: 'close', label: 'Close', type: VisualScriptType.exec),
+    VisualScriptPin(id: 'toggle', label: 'Toggle', type: VisualScriptType.exec),
+    VisualScriptPin(
+      id: 'startClosed',
+      label: 'Start Closed',
+      type: VisualScriptType.boolean,
+      defaultValue: true,
+    ),
+    VisualScriptPin(
+      id: 'then',
+      label: 'Exit',
+      type: VisualScriptType.exec,
+      isInput: false,
+    ),
+  ],
+  evaluate: (context, node, inputs) {
+    var open =
+        context.nodeState[node.id] as bool? ??
+        !scriptBool(inputs['startClosed'], true);
+    switch (context.enteredPin) {
+      case 'open':
+        open = true;
+      case 'close':
+        open = false;
+      case 'toggle':
+        open = !open;
+    }
+    context.nodeState[node.id] = open;
+    if (context.enteredPin != 'exec') return _stop();
+    return open ? _then() : _stop();
+  },
+);
+
+final math.Random _random = math.Random();
+
 /// Every control node here, for registering in one go.
 /// {@category Visual scripting}
 final List<VisualScriptNodeType> controlVisualScriptNodes = [
   breakLoop,
+  doN,
+  flipFlop,
+  gateFlow,
+  isValid,
+  multiGate,
   cacheValue,
   forEachLoop,
   forLoop,

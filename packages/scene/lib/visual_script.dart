@@ -45,6 +45,13 @@ export 'src/visual_script/visual_script_control.dart'
         casePin,
         casesOf,
         controlVisualScriptNodes,
+        doN,
+        flipFlop,
+        gateFlow,
+        isValid,
+        multiGate,
+        multiGateCountOf,
+        multiGatePin,
         forEachLoop,
         forLoop,
         maxLoopIterations,
@@ -89,10 +96,21 @@ export 'src/visual_script/visual_script_data.dart'
         trimText,
         upperCase,
         valueToText;
+export 'src/visual_script/visual_script_functions.dart'
+    show
+        calledGraphKey,
+        calledGraphOf,
+        callFunction,
+        functionEntry,
+        functionResult,
+        functionVisualScriptNodes;
 export 'src/visual_script/visual_script_graph.dart'
     show
         VisualScriptGraph,
         VisualScriptGraphKind,
+        VisualScriptGraphLookup,
+        VisualScriptParameter,
+        VisualScriptShapeContext,
         VisualScriptLink,
         VisualScriptNodeSpec,
         VisualScriptPin,
@@ -203,11 +221,11 @@ export 'src/visual_script/visual_script_trace.dart'
 export 'src/visual_script/visual_script_runtime.dart'
     show
         VisualScriptBreak,
+        VisualScriptCallResult,
         VisualScriptContext,
         VisualScriptFlow,
         VisualScriptFlowStatus,
         VisualScriptFrame,
-        VisualScriptGraphLookup,
         VisualScriptHost,
         VisualScriptInterpreter,
         VisualScriptNodeType,

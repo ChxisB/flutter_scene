@@ -51,9 +51,10 @@ String? visualScriptConnectablePin(
   // A node that is not in a graph yet, purely to ask a dynamic-pin type what
   // shape a fresh one would have.
   final probe = VisualScriptNodeSpec(id: -1, type: type.id);
+  final shape = VisualScriptShapeContext(graphs: graphs);
   final candidates = fromIsInput
-      ? type.outputsOf(probe, graphs)
-      : type.inputsOf(probe, graphs);
+      ? type.outputsOf(probe, shape)
+      : type.inputsOf(probe, shape);
   for (final pin in candidates) {
     final ok = fromIsInput
         ? pin.type.connectsTo(fromType)

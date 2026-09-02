@@ -215,6 +215,13 @@ enum VisualScriptVariableScope {
   /// reasonably reach across.
   flow('Flow'),
 
+  /// One call of one function: a scratch pad that is discarded when the
+  /// function returns, and that a second call in the same frame does not see.
+  ///
+  /// Distinct from [flow], which belongs to the event that started everything
+  /// and is shared by every function that event calls.
+  local('Local'),
+
   /// The blueprint's own variables, shared by every graph in it: the event
   /// graph, the construction script, and the functions they call.
   graph('Graph'),
@@ -247,6 +254,76 @@ enum VisualScriptVariableScope {
   static VisualScriptVariableScope parse(String? name) =>
       values.where((scope) => scope.name == name).firstOrNull ??
       VisualScriptVariableScope.graph;
+}
+
+/// Finds a graph a node names, for the node types whose shape or behaviour
+/// comes from another graph — a function call, a subgraph, a state's
+/// transition.
+///
+/// `Blueprint.graph` has this signature and tears off directly, which is why
+/// this is a function rather than an interface the graph model would have to
+/// know a blueprint to satisfy.
+/// {@category Visual scripting}
+typedef VisualScriptGraphLookup = VisualScriptGraph? Function(String name);
+
+/// One parameter or return value in a graph's signature.
+///
+/// Deliberately not a [VisualScriptPin]: the same parameter is an *output* on
+/// the entry node inside the function and an *input* on every node that calls
+/// it, so a value carrying `isInput` would have to be wrong at one end.
+/// {@category Visual scripting}
+class VisualScriptParameter {
+  const VisualScriptParameter({
+    required this.id,
+    required this.name,
+    required this.type,
+    this.defaultValue,
+    this.doc = '',
+  });
+
+  /// Stable across a rename, so a wire into a call node survives one.
+  final String id;
+
+  /// What the pin is called at both ends.
+  final String name;
+
+  final VisualScriptType type;
+
+  /// What a caller that wires nothing to it sends.
+  final Object? defaultValue;
+
+  /// One line on what it means.
+  final String doc;
+
+  /// This parameter as a pin, on whichever side is asking.
+  VisualScriptPin asPin({required bool isInput}) => VisualScriptPin(
+    id: id,
+    label: name,
+    type: type,
+    isInput: isInput,
+    defaultValue: defaultValue,
+    doc: doc,
+  );
+}
+
+/// What a node's shape may depend on, beyond the node itself.
+///
+/// An entry node's pins are its own graph's parameters; a call node's are
+/// those of the graph it names. Neither can be answered by a node alone, and
+/// the two need different things, so both are carried.
+/// {@category Visual scripting}
+class VisualScriptShapeContext {
+  const VisualScriptShapeContext({this.graph, this.graphs});
+
+  /// The graph the node sits in.
+  final VisualScriptGraph? graph;
+
+  /// How to find a graph the node names.
+  final VisualScriptGraphLookup? graphs;
+
+  /// Nothing known, which is what a palette asking "what would a fresh one
+  /// look like" has.
+  static const VisualScriptShapeContext none = VisualScriptShapeContext();
 }
 
 /// What a graph in a blueprint is for.
@@ -289,12 +366,17 @@ class VisualScriptGraph {
     List<VisualScriptNodeSpec>? nodes,
     List<VisualScriptLink>? links,
     List<VisualScriptVariable>? variables,
+    List<VisualScriptParameter>? parameters,
+    List<VisualScriptParameter>? results,
     this.nextNodeId = 1,
     this.name = '',
     this.kind = VisualScriptGraphKind.eventGraph,
+    this.isPure = false,
   }) : nodes = nodes ?? [],
        links = links ?? [],
-       variables = variables ?? [];
+       variables = variables ?? [],
+       parameters = parameters ?? [],
+       results = results ?? [];
 
   /// What this graph is called inside its blueprint.
   ///
@@ -309,6 +391,28 @@ class VisualScriptGraph {
   final List<VisualScriptLink> links;
   final List<VisualScriptVariable> variables;
 
+  /// What a caller passes in. Empty for a graph nobody calls.
+  ///
+  /// These are the *signature*: they become output pins on the entry node
+  /// inside the graph and input pins on every node that calls it, so adding
+  /// one here changes both ends at once.
+  final List<VisualScriptParameter> parameters;
+
+  /// What it hands back.
+  final List<VisualScriptParameter> results;
+
+  /// Whether calling this graph can be done without control flow.
+  ///
+  /// A pure graph promises to change nothing — it reads values and returns
+  /// values — so its call node has no exec pins and runs whenever something
+  /// asks for one of its results. An impure one sits in the exec order like
+  /// any other statement, because *when* it runs is part of what it does.
+  ///
+  /// The promise is not enforced: a pure graph that writes a variable will
+  /// write it, at whatever moment somebody happened to read its output. That
+  /// is why the default is false.
+  bool isPure;
+
   /// The id the next added node takes. Kept on the graph rather than derived
   /// from the highest id in use, so deleting the newest node does not hand
   /// its id to the next one and silently reconnect a stale wire.
@@ -317,6 +421,14 @@ class VisualScriptGraph {
   VisualScriptNodeSpec? node(int id) {
     for (final node in nodes) {
       if (node.id == id) return node;
+    }
+    return null;
+  }
+
+  /// The parameter with this id, or null.
+  VisualScriptParameter? parameter(String id) {
+    for (final entry in parameters) {
+      if (entry.id == id) return entry;
     }
     return null;
   }

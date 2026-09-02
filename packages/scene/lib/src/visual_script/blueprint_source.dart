@@ -168,8 +168,10 @@ String printBlueprint(VisualScriptGraph graph, {String name = ''}) {
 
 // --- parsing -----------------------------------------------------------------
 
+/// Built from the enum rather than written out, so adding a scope cannot
+/// leave the parser recognising five of six.
 final RegExp _varPattern = RegExp(
-  r'^var(?:\s+(flow|graph|object|scene|application|saved))?'
+  '^var(?:\\s+(${VisualScriptVariableScope.values.map((s) => s.name).join('|')}))?'
   r'\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z][A-Za-z0-9]*)\s*'
   r'(?:=\s*(.+))?$',
 );

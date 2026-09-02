@@ -367,6 +367,128 @@ void main() {
     });
   });
 
+  group('the gates and counters', () {
+    test('Do N passes through N times, then stops until Reset', () {
+      final r = rig();
+      final tick = r.graph.add('event.tick');
+      final gate = r.graph.add('flow.doN')..literals['n'] = 2;
+      final print = r.graph.add('debug.print')..literals['value'] = 'x';
+      r.graph
+        ..wire(tick, 'then', gate, 'exec')
+        ..wire(gate, 'then', print, 'exec');
+
+      final context = VisualScriptContext(graph: r.graph, host: r.host);
+      for (var i = 0; i < 4; i++) {
+        r.runner.fire(context, onTick.id);
+      }
+      expect(r.host.messages, ['x', 'x']);
+    });
+
+    test('Flip Flop alternates, and says which side it took', () {
+      final r = rig();
+      final tick = r.graph.add('event.tick');
+      final flip = r.graph.add('flow.flipFlop');
+      final a = r.graph.add('debug.print')..literals['value'] = 'a';
+      final b = r.graph.add('debug.print')..literals['value'] = 'b';
+      r.graph
+        ..wire(tick, 'then', flip, 'exec')
+        ..wire(flip, 'a', a, 'exec')
+        ..wire(flip, 'b', b, 'exec');
+
+      final context = VisualScriptContext(graph: r.graph, host: r.host);
+      for (var i = 0; i < 3; i++) {
+        r.runner.fire(context, onTick.id);
+      }
+      expect(r.host.messages, ['a', 'b', 'a']);
+    });
+
+    test('Multi Gate uses each output once, then stops', () {
+      final r = rig();
+      final tick = r.graph.add('event.tick');
+      final gate = r.graph.add('flow.multiGate')..literals['count'] = 3;
+      for (var i = 0; i < 3; i++) {
+        final print = r.graph.add('debug.print')..literals['value'] = '$i';
+        r.graph.wire(gate, multiGatePin(i), print, 'exec');
+      }
+      r.graph.wire(tick, 'then', gate, 'exec');
+
+      final context = VisualScriptContext(graph: r.graph, host: r.host);
+      for (var i = 0; i < 5; i++) {
+        r.runner.fire(context, onTick.id);
+      }
+      expect(r.host.messages, ['0', '1', '2']);
+    });
+
+    test('Multi Gate with Loop starts over instead of stopping', () {
+      final r = rig();
+      final tick = r.graph.add('event.tick');
+      final gate = r.graph.add('flow.multiGate')
+        ..literals['count'] = 2
+        ..literals['loop'] = true;
+      for (var i = 0; i < 2; i++) {
+        final print = r.graph.add('debug.print')..literals['value'] = '$i';
+        r.graph.wire(gate, multiGatePin(i), print, 'exec');
+      }
+      r.graph.wire(tick, 'then', gate, 'exec');
+
+      final context = VisualScriptContext(graph: r.graph, host: r.host);
+      for (var i = 0; i < 4; i++) {
+        r.runner.fire(context, onTick.id);
+      }
+      expect(r.host.messages, ['0', '1', '0', '1']);
+    });
+
+    test('a Gate starts closed and opens from elsewhere in the graph', () {
+      final r = rig();
+      final tick = r.graph.add('event.tick');
+      final gate = r.graph.add('flow.gateFlow');
+      final print = r.graph.add('debug.print')..literals['value'] = 'through';
+      r.graph
+        ..wire(tick, 'then', gate, 'exec')
+        ..wire(gate, 'then', print, 'exec');
+
+      final context = VisualScriptContext(graph: r.graph, host: r.host);
+      r.runner.fire(context, onTick.id);
+      expect(r.host.messages, isEmpty, reason: 'it starts closed');
+
+      final open = r.graph.add('event.signal');
+      r.graph.wire(open, 'then', gate, 'open');
+      r.runner
+        ..fire(context, onSignal.id)
+        ..fire(context, onTick.id);
+      expect(r.host.messages, ['through']);
+    });
+
+    test('Is Valid treats nothing, and empty, as not valid', () {
+      final r = rig();
+      final context = VisualScriptContext(graph: r.graph, host: r.host);
+
+      for (final (value, expected) in <(Object?, String)>[
+        (null, 'no'),
+        ('', 'no'),
+        (<Object?>[], 'no'),
+        ('something', 'yes'),
+        (0, 'yes'),
+      ]) {
+        final graph = VisualScriptGraph();
+        final tick = graph.add('event.tick');
+        final check = graph.add('flow.isValid')..literals['value'] = value;
+        final yes = graph.add('debug.print')..literals['value'] = 'yes';
+        final no = graph.add('debug.print')..literals['value'] = 'no';
+        graph
+          ..wire(tick, 'then', check, 'exec')
+          ..wire(check, 'valid', yes, 'exec')
+          ..wire(check, 'invalid', no, 'exec');
+        final host = NullVisualScriptHost();
+        VisualScriptInterpreter(
+          standardVisualScriptRegistry(),
+        ).fire(VisualScriptContext(graph: graph, host: host), onTick.id);
+        expect(host.messages, [expected], reason: '$value');
+      }
+      expect(context, isNotNull);
+    });
+  });
+
   group('what an exec node produces', () {
     test('reading an exec node twice does not run it twice', () {
       // Play Animation asked for Found must not play the animation again.

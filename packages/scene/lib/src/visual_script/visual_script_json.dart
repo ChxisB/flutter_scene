@@ -45,6 +45,13 @@ Map<String, Object?> encodeVisualScript(VisualScriptGraph graph) => {
         'toPin': link.toPin,
       },
   ],
+  if (graph.isPure) 'pure': true,
+  if (graph.parameters.isNotEmpty)
+    'parameters': [
+      for (final entry in graph.parameters) _encodeParameter(entry),
+    ],
+  if (graph.results.isNotEmpty)
+    'results': [for (final entry in graph.results) _encodeParameter(entry)],
   if (graph.variables.isNotEmpty)
     'variables': [
       for (final variable in graph.variables)
@@ -116,6 +123,9 @@ VisualScriptGraph decodeVisualScript(Map<String, Object?> json) {
       ),
     );
   }
+  graph.isPure = json['pure'] == true;
+  graph.parameters.addAll(_decodeParameters(json['parameters']));
+  graph.results.addAll(_decodeParameters(json['results']));
   for (final raw in (json['variables'] as List? ?? const [])) {
     if (raw is! Map) continue;
     final map = raw.cast<String, Object?>();
@@ -213,6 +223,32 @@ final Map<String, (int, Object Function(List<Object?>))> _vectorTags = {
         Quaternion(_double(v[0]), _double(v[1]), _double(v[2]), _double(v[3])),
   ),
 };
+
+Map<String, Object?> _encodeParameter(VisualScriptParameter parameter) => {
+  'id': parameter.id,
+  'name': parameter.name,
+  'type': parameter.type.name,
+  if (parameter.doc.isNotEmpty) 'doc': parameter.doc,
+  if (parameter.defaultValue != null)
+    'default': _encodeValue(parameter.defaultValue),
+};
+
+List<VisualScriptParameter> _decodeParameters(Object? raw) => [
+  for (final entry in (raw as List? ?? const []))
+    if (entry is Map)
+      if (entry['id'] case final String id)
+        VisualScriptParameter(
+          id: id,
+          name: entry['name'] is String ? entry['name']! as String : id,
+          type:
+              VisualScriptType.values
+                  .where((type) => type.name == entry['type'])
+                  .firstOrNull ??
+              VisualScriptType.any,
+          doc: entry['doc'] is String ? entry['doc']! as String : '',
+          defaultValue: _decodeValue(entry['default']),
+        ),
+];
 
 double _double(Object? value) => value is num ? value.toDouble() : 0;
 

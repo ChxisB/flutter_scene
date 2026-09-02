@@ -13,6 +13,7 @@ import 'package:vector_math/vector_math.dart';
 
 import 'visual_script_control.dart';
 import 'visual_script_data.dart';
+import 'visual_script_functions.dart';
 import 'visual_script_graph.dart';
 import 'visual_script_math.dart';
 import 'visual_script_runtime.dart';
@@ -179,7 +180,7 @@ final VisualScriptNodeType sequence = VisualScriptNodeType(
       isInput: false,
     ),
   ],
-  pinsFor: (node, graphs) => [
+  pinsFor: (node, context) => [
     _execIn,
     for (var i = 0; i < sequenceCountOf(node); i++)
       VisualScriptPin(
@@ -901,6 +902,7 @@ final List<VisualScriptNodeType> standardVisualScriptNodes = [
   delay,
   gate,
   ...controlVisualScriptNodes,
+  ...functionVisualScriptNodes,
   getVariable,
   setVariable,
   addNumbers,
